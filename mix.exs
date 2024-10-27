@@ -9,7 +9,13 @@ defmodule SwarmEx.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       name: "SwarmEx",
-      description: "Elixir library for lightweight AI agent orchestration"
+      description: "Elixir library for lightweight AI agent orchestration",
+      source_url: "https://github.com/nrrso/swarm_ex",
+      homepage_url: "https://github.com/nrrso/swarm_ex",
+      package: package(),
+      docs: [
+        extras: ["README.md"]
+      ]
     ]
   end
 
@@ -28,8 +34,20 @@ defmodule SwarmEx.MixProject do
       {:telemetry, "~> 1.0"},
       {:uuid, "~> 1.1.8"},
       # For testing
-      {:ex_doc, "~> 0.29", only: :dev, runtime: false},
-      {:dialyxir, "~> 1.0", only: [:dev], runtime: false}
+      {:ex_doc, "~> 0.31", only: :dev, runtime: false},
+      {:dialyxir, "~> 1.0", only: [:dev], runtime: false},
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:sobelow, "~> 0.13", only: [:dev, :test], runtime: false}
+    ]
+  end
+
+  defp package do
+    [
+      files: ~w(lib .formatter.exs mix.exs README* LICENSE* CHANGELOG*),
+      maintainers: ["Norris Sam Osarenkhoe"],
+      licenses: ["Apache-2.0"],
+      links: %{"GitHub" => "https://github.com/nrrso/swarm_ex"}
+      # Other package information...
     ]
   end
 end
