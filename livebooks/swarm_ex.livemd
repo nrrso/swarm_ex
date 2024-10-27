@@ -5,7 +5,7 @@ Mix.install(
   [
     {:instructor, "~> 0.0.5"},
     {:openai_ex, "~> 0.8.4"},
-    {:swarm_ex, path: "/Users/norris/Projects/swarm_ex"},
+    {:swarm_ex, git: "https://github.com/nrrso/swarm_ex.git", branch: "main"},
     {:jason, "~> 1.4"}
   ],
   config: [
