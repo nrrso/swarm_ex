@@ -1,4 +1,4 @@
-# SwarmEx
+# SwarmEx  🐝 🐝 🐝
 
 SwarmEx is an Elixir library for lightweight, controllable, and testable AI agent orchestration. It provides primitives for creating and coordinating networks of AI agents, leveraging Elixir's native strengths in concurrency and fault tolerance.
 
