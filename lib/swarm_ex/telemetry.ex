@@ -3,253 +3,218 @@ defmodule SwarmEx.Telemetry do
   Telemetry integration for SwarmEx.
   Provides metrics and event tracking for agent activities.
 
-  ## Event Structure
+  ## Events
+  The following events are emitted:
 
-  All events are prefixed with [:swarm_ex] and follow this pattern:
-  - [:swarm_ex, :category, :operation, :status]
+  * `[:swarm_ex, :agent, :message, :start]` - When an agent begins processing a message
+    * Measurement: `:system_time`
+    * Metadata: `:agent_id`, `:message_type`, `:network_id`
 
-  Common measurements:
-  - :duration - Time taken in native time units
-  - :system_time - System time when the event occurred
-  - :memory - Memory usage when relevant
+  * `[:swarm_ex, :agent, :message, :stop]` - When an agent completes processing a message
+    * Measurement: `:duration`, `:queue_time`
+    * Metadata: `:agent_id`, `:message_type`, `:network_id`, `:result`
 
-  Common metadata:
-  - :network_id - ID of the agent network
-  - :agent_id - ID of the agent involved
-  - :correlation_id - Request tracking ID
+  * `[:swarm_ex, :tool, :execute, :start]` - When a tool execution begins
+    * Measurement: `:system_time`
+    * Metadata: `:tool_name`, `:agent_id`, `:args`
+
+  * `[:swarm_ex, :tool, :execute, :stop]` - When a tool execution completes
+    * Measurement: `:duration`
+    * Metadata: `:tool_name`, `:agent_id`, `:result`
   """
 
   require Logger
 
-  # Event prefix for all SwarmEx telemetry events
-  @prefix [:swarm_ex]
-
-  # Define all possible event combinations
-  @events [
-    # Network events
-    [:network, :create, :start],
-    [:network, :create, :stop],
-    [:network, :create, :exception],
-    [:network, :shutdown, :start],
-    [:network, :shutdown, :stop],
-    [:network, :shutdown, :exception],
-
-    # Agent lifecycle events
-    [:agent, :create, :start],
-    [:agent, :create, :stop],
-    [:agent, :create, :exception],
-    [:agent, :terminate, :start],
-    [:agent, :terminate, :stop],
-    [:agent, :terminate, :exception],
-
-    # Message events
-    [:agent, :message, :start],
-    [:agent, :message, :stop],
-    [:agent, :message, :exception],
-
-    # Handoff events
-    [:agent, :handoff, :start],
-    [:agent, :handoff, :stop],
-    [:agent, :handoff, :exception],
-
-    # Tool events
-    [:tool, :execute, :start],
-    [:tool, :execute, :stop],
-    [:tool, :execute, :exception],
-
-    # State events
-    [:state, :update, :start],
-    [:state, :update, :stop],
-    [:state, :update, :exception]
-  ]
-
   @doc """
-  Attaches telemetry handlers for all SwarmEx events.
-
-  ## Options
-
-    * `:handler_prefix` - Prefix for handler IDs (default: "swarm_ex")
-    * `:formatter` - Custom event formatter function
-    * `:storage` - Storage backend for metrics (default: ETS)
+  Attaches telemetry event handlers. Call this when your application starts.
   """
-  @spec attach(keyword()) :: :ok
-  def attach(opts \\ []) do
-    handler_id = opts[:handler_prefix] || "swarm_ex"
-    formatter = opts[:formatter] || (&default_formatter/4)
+  def attach do
+    handlers = [
+      {[:swarm_ex, :agent, :message], &handle_agent_message/4},
+      {[:swarm_ex, :tool, :execute], &handle_tool_execution/4},
+      {[:swarm_ex, :agent, :handoff], &handle_agent_handoff/4}
+    ]
 
-    for event <- @events do
+    for {event_name, handler} <- handlers do
       :telemetry.attach(
-        handler_id <> "." <> Enum.join(event, "."),
-        @prefix ++ event,
-        &handle_event/4,
-        %{formatter: formatter}
+        handler_id(event_name),
+        event_name ++ [:start],
+        handler,
+        :start
+      )
+
+      :telemetry.attach(
+        handler_id(event_name ++ [:stop]),
+        event_name ++ [:stop],
+        handler,
+        :stop
+      )
+
+      :telemetry.attach(
+        handler_id(event_name ++ [:exception]),
+        event_name ++ [:exception],
+        handler,
+        :exception
       )
     end
-
-    Logger.info(%{
-      event_type: "system_status",
-      telemetry_event: "handlers_attached",
-      handler_prefix: handler_id,
-      event_count: length(@events)
-    })
 
     :ok
   end
 
   @doc """
-  Executes a telemetry event with the SwarmEx prefix.
-
-  ## Examples
-
-      execute_event([:agent, :message, :stop], %{duration: 123}, %{agent_id: "agent1"})
+  Emits an agent message event with timing information.
   """
-  @spec execute_event(list(), map(), map()) :: :ok
-  def execute_event(event_name, measurements, metadata \\ %{}) do
-    metadata = Map.put(metadata, :timestamp, DateTime.utc_now())
-    :telemetry.execute(@prefix ++ event_name, measurements, metadata)
-  end
-
-  @doc """
-  Tracks the execution time of a function and emits telemetry events.
-
-  ## Examples
-
-      track_operation([:agent, :message], fn ->
-        # Operation to measure
-        {:ok, result}
-      end, %{agent_id: "agent1"})
-  """
-  @spec track_operation(list(), (-> result), map()) :: result when result: term()
-  def track_operation(event_prefix, func, metadata \\ %{}) do
+  def span_agent_message(agent_id, message_type, func) when is_function(func, 0) do
     start_time = System.monotonic_time()
-    start_memory = :erlang.memory(:total)
 
-    execute_event(
-      event_prefix ++ [:start],
-      %{
-        system_time: System.system_time(),
-        memory: start_memory
-      },
-      metadata
+    :telemetry.execute(
+      [:swarm_ex, :agent, :message, :start],
+      %{system_time: System.system_time()},
+      %{agent_id: agent_id, message_type: message_type}
     )
 
     try do
       result = func.()
-      end_time = System.monotonic_time()
-      end_memory = :erlang.memory(:total)
 
-      execute_event(
-        event_prefix ++ [:stop],
+      :telemetry.execute(
+        [:swarm_ex, :agent, :message, :stop],
         %{
-          duration: end_time - start_time,
-          memory_delta: end_memory - start_memory
+          duration: System.monotonic_time() - start_time,
+          queue_time: get_queue_time()
         },
-        Map.put(metadata, :result, result)
+        %{
+          agent_id: agent_id,
+          message_type: message_type,
+          result: :ok
+        }
       )
 
       result
-    catch
-      kind, reason ->
-        execute_event(
-          event_prefix ++ [:exception],
+    rescue
+      error ->
+        :telemetry.execute(
+          [:swarm_ex, :agent, :message, :exception],
+          %{duration: System.monotonic_time() - start_time},
           %{
-            duration: System.monotonic_time() - start_time
-          },
-          Map.merge(metadata, %{
-            kind: kind,
-            reason: reason,
+            agent_id: agent_id,
+            message_type: message_type,
+            error: error,
             stacktrace: __STACKTRACE__
-          })
+          }
         )
 
-        :erlang.raise(kind, reason, __STACKTRACE__)
+        reraise error, __STACKTRACE__
     end
   end
 
-  # Event emitting helpers
+  @doc """
+  Emits a tool execution event with timing information.
+  """
+  def span_tool_execution(tool_name, agent_id, args, func) when is_function(func, 0) do
+    start_time = System.monotonic_time()
 
-  def emit_agent_message(agent_id, message_type, duration) do
-    execute_event([:agent, :message, :stop], %{duration: duration}, %{
-      agent_id: agent_id,
-      message_type: message_type,
-      memory: :erlang.memory(:total)
-    })
+    :telemetry.execute(
+      [:swarm_ex, :tool, :execute, :start],
+      %{system_time: System.system_time()},
+      %{tool_name: tool_name, agent_id: agent_id, args: args}
+    )
+
+    try do
+      result = func.()
+
+      :telemetry.execute(
+        [:swarm_ex, :tool, :execute, :stop],
+        %{duration: System.monotonic_time() - start_time},
+        %{
+          tool_name: tool_name,
+          agent_id: agent_id,
+          result: result
+        }
+      )
+
+      result
+    rescue
+      error ->
+        :telemetry.execute(
+          [:swarm_ex, :tool, :execute, :exception],
+          %{duration: System.monotonic_time() - start_time},
+          %{
+            tool_name: tool_name,
+            agent_id: agent_id,
+            error: error,
+            stacktrace: __STACKTRACE__
+          }
+        )
+
+        reraise error, __STACKTRACE__
+    end
   end
 
-  def emit_tool_execution(tool_name, duration, result) do
-    execute_event([:tool, :execute, :stop], %{duration: duration}, %{
-      tool: tool_name,
-      result: result,
-      memory: :erlang.memory(:total)
-    })
+  # Event Handlers
+  defp handle_agent_message(_event_name, measurements, metadata, :start) do
+    Logger.debug(fn ->
+      "Agent #{inspect(metadata.agent_id)} started processing #{metadata.message_type}"
+    end)
   end
 
-  def emit_handoff(from_agent, to_agent, duration, success?) do
-    execute_event([:agent, :handoff, :stop], %{duration: duration}, %{
-      from_agent: from_agent,
-      to_agent: to_agent,
-      success: success?,
-      memory: :erlang.memory(:total)
-    })
+  defp handle_agent_message(_event_name, measurements, metadata, :stop) do
+    Logger.debug(fn ->
+      "Agent #{inspect(metadata.agent_id)} completed #{metadata.message_type} in #{measurements.duration}μs"
+    end)
   end
 
-  def emit_network_creation(network_id, duration) do
-    execute_event([:network, :create, :stop], %{duration: duration}, %{
-      network_id: network_id,
-      memory: :erlang.memory(:total)
-    })
+  defp handle_agent_message(_event_name, measurements, metadata, :exception) do
+    Logger.error(fn ->
+      "Agent #{inspect(metadata.agent_id)} failed processing #{metadata.message_type}: #{Exception.message(metadata.error)}"
+    end)
   end
 
-  def emit_agent_creation(agent_id, network_id, duration) do
-    execute_event([:agent, :create, :stop], %{duration: duration}, %{
-      agent_id: agent_id,
-      network_id: network_id,
-      memory: :erlang.memory(:total)
-    })
+  defp handle_tool_execution(_event_name, measurements, metadata, :start) do
+    Logger.debug(fn ->
+      "Tool #{metadata.tool_name} started execution for agent #{inspect(metadata.agent_id)}"
+    end)
   end
 
-  def emit_state_update(agent_id, state_size, duration) do
-    execute_event([:state, :update, :stop], %{duration: duration}, %{
-      agent_id: agent_id,
-      state_size: state_size,
-      memory: :erlang.memory(:total)
-    })
+  defp handle_tool_execution(_event_name, measurements, metadata, :stop) do
+    Logger.debug(fn ->
+      "Tool #{metadata.tool_name} completed for agent #{inspect(metadata.agent_id)} in #{measurements.duration}μs"
+    end)
   end
 
-  # Private Functions
-
-  defp handle_event(event, measurements, metadata, config) do
-    formatter = config.formatter
-    formatter.(event, measurements, metadata, config)
-  rescue
-    e ->
-      Logger.error(%{
-        event_type: "system_error",
-        telemetry_event: "handler_error",
-        error_details: inspect(e),
-        failed_event: event,
-        measurements: measurements,
-        metadata: metadata
-      })
+  defp handle_tool_execution(_event_name, measurements, metadata, :exception) do
+    Logger.error(fn ->
+      "Tool #{metadata.tool_name} failed for agent #{inspect(metadata.agent_id)}: #{Exception.message(metadata.error)}"
+    end)
   end
 
-  defp default_formatter(event, measurements, metadata, _config) do
-    Logger.debug(%{
-      event_type: "telemetry",
-      telemetry_event: event,
-      measurements: measurements,
-      metadata: metadata
-    })
+  defp handle_agent_handoff(_event_name, measurements, metadata, :start) do
+    Logger.info(fn ->
+      "Starting agent handoff from #{inspect(metadata.source_agent)} to #{inspect(metadata.target_agent)}"
+    end)
   end
 
-  @doc false
-  def child_spec(opts) do
-    %{
-      id: __MODULE__,
-      start: {__MODULE__, :start_link, [opts]},
-      type: :worker,
-      restart: :permanent,
-      shutdown: 500
-    }
+  defp handle_agent_handoff(_event_name, measurements, metadata, :stop) do
+    Logger.info(fn ->
+      "Completed agent handoff from #{inspect(metadata.source_agent)} to #{inspect(metadata.target_agent)} in #{measurements.duration}μs"
+    end)
+  end
+
+  defp handle_agent_handoff(_event_name, measurements, metadata, :exception) do
+    Logger.error(fn ->
+      "Failed agent handoff from #{inspect(metadata.source_agent)} to #{inspect(metadata.target_agent)}: #{Exception.message(metadata.error)}"
+    end)
+  end
+
+  # Helper Functions
+
+  defp handler_id(event_name) do
+    {:swarm_ex, event_name}
+  end
+
+  defp get_queue_time do
+    case Process.info(self(), :message_queue_len) do
+      {:message_queue_len, len} -> len
+      _ -> 0
+    end
   end
 end

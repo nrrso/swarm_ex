@@ -1,0 +1,199 @@
+# Swarm_Ex
+
+```elixir
+Mix.install(
+  [
+    {:instructor, "~> 0.0.5"},
+    {:openai_ex, "~> 0.8.4"},
+    {:swarm_ex, path: "/Users/norris/Projects/swarm_ex"},
+    {:jason, "~> 1.4"}
+  ],
+  config: [
+    instructor: [
+      adapter: Instructor.Adapters.OpenAI,
+      openai: [api_key: System.fetch_env!("LB_OPENAI_API_KEY")]
+    ]
+  ]
+)
+```
+
+## Define Example Modules
+
+```elixir
+# Message Classification Tool
+defmodule ClassifyMessageTool do
+  @behaviour SwarmEx.Tool
+
+  @impl true
+  def execute(%{message: message}) do
+    # TODO: Replace this with actual LLM call
+    # Placeholder for LLM classification
+    # Example API call structure:
+    # response = OpenAI.chat_completion(
+    #   model: "gpt-3.5-turbo",
+    #   messages: [
+    #     %{role: "system", content: "You are a classifier that determines if messages are Star Wars related. Reply with true or false only."},
+    #     %{role: "user", content: message}
+    #   ]
+    # )
+    
+    # For now, simple keyword matching
+    is_star_wars = String.downcase(message) |> String.contains?(["star wars", "jedi", "sith", "force"])
+    {:ok, %{is_star_wars: is_star_wars}}
+  end
+
+  @impl true
+  def validate(%{message: _}), do: :ok
+  def validate(_), do: {:error, :invalid_args}
+
+  @impl true
+  def cleanup(_), do: :ok
+end
+
+```
+
+```elixir
+# Star Wars Response Tool
+defmodule StarWarsResponseTool do
+  @behaviour SwarmEx.Tool
+
+  @impl true
+  def execute(_args) do
+    {:ok, "May the Force be with you!"}
+  end
+
+  @impl true
+  def validate(_), do: :ok
+
+  @impl true
+  def cleanup(_), do: :ok
+end
+```
+
+```elixir
+defmodule TriageAgent do
+  use SwarmEx.Agent
+
+  @impl true
+  def init(opts) do
+    {:ok, opts}
+  end
+
+  @impl true
+  def terminate(_reason, _state), do: :ok
+
+  @impl true
+  def handle_message(message, state) when is_binary(message) do
+    # Directly execute the ClassifyMessageTool instead of using execute_tool
+    case ClassifyMessageTool.execute(%{message: message}) do
+      {:ok, %{is_star_wars: true}} ->
+        Logger.info("Message classified as Star Wars related. Handing off to StarWarsAgent.")
+        handoff_to_star_wars(message, state)
+      
+      {:ok, %{is_star_wars: false}} ->
+        Logger.info("Message not Star Wars related. Providing general response.")
+        {:ok, "Hi, how can I help?", state}
+      
+      {:error, reason} ->
+        Logger.error("Classification failed: #{inspect(reason)}")
+        {:error, "Sorry, I couldn't process your message."}
+    end
+  end
+
+  @impl true
+  def handle_tool(:respond, _args, state) do
+    {:ok, state}
+  end
+
+  defp handoff_to_star_wars(message, state) do
+    case state[:star_wars_agent] do
+      nil -> 
+        {:error, "Star Wars agent not configured"}
+      agent_pid -> 
+        case SwarmEx.send_message_to_pid(agent_pid, message) do
+          {:ok, response} -> {:ok, response, state}
+          error -> error
+        end
+    end
+  end
+end
+```
+
+```elixir
+# Star Wars Specialist Agent
+defmodule StarWarsAgent do
+  use SwarmEx.Agent
+
+  @impl true
+  def init(opts) do
+    {:ok, opts}
+  end
+
+  @impl true
+  def terminate(_reason, _state), do: :ok
+
+  @impl true
+  def handle_message(message, state) do
+    case StarWarsResponseTool.execute(%{}) do
+      {:ok, response} -> {:ok, response, state}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @impl true
+  def handle_tool(:respond, _args, state) do
+    {:ok, state}
+  end
+end
+```
+
+## Instantiate Tools and Agents
+
+```elixir
+# Create network and agents
+{:ok, network} = SwarmEx.create_network()
+```
+
+```elixir
+# Register our tools
+SwarmEx.register_tool(ClassifyMessageTool)
+SwarmEx.register_tool(StarWarsResponseTool)
+```
+
+```elixir
+# Create the Star Wars agent first
+{:ok, star_wars_agent} = SwarmEx.create_agent(network, StarWarsAgent, name: "star_wars_agent")
+```
+
+```elixir
+SwarmEx.Client.list_agents(network)
+```
+
+```elixir
+# Create the triage agent with reference to the Star Wars agent
+{:ok, triage_agent} = SwarmEx.create_agent(
+  network, 
+  TriageAgent, 
+  name: "triage_agent",
+  star_wars_agent: star_wars_agent
+)
+
+```
+
+```elixir
+SwarmEx.Client.list_agents(network)
+```
+
+## Sending Message
+
+```elixir
+# Test with non-Star Wars message
+{:ok, regular_response} = SwarmEx.send_message(network, "triage_agent", "Hello, what's the weather like?")
+IO.puts("Regular response: #{regular_response}")
+```
+
+```elixir
+# Test with Star Wars message
+{:ok, star_wars_response} = SwarmEx.send_message(network, "triage_agent", "Tell me about the Jedi")
+IO.puts("Star Wars response: #{star_wars_response}")
+```

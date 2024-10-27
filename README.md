@@ -31,20 +31,55 @@ end
 # Define an agent
 defmodule MyAgent do
   use SwarmEx.Agent
+
+  opts = [
+          id: UUID.uuid4(),
+          name: "Agent 47",
+          instruction: "You are a helpful agent.",
+          tools: %{}
+  ]
   
   def init(opts), do: {:ok, opts}
   
   def handle_message(msg, state) do
     # Handle the message
-    {:ok, response, state}
+    # call to openai to generate a response and if necessary invoke a tool call
+    response = Instructor.chat_completion(
+      model: "gpt-3.5-turbo",
+      response_model: Triage,
+      messages: [
+        %{
+          role: "user",
+          content: msg
+        }
+      ]
+    )
+    case response do
+      {:ok, reply } -> check_message(reply, state)
+      {:error, error } -> SwarmEx.Error.AgentError.exception(
+        agent: __MODULE__, reason: error)
+    end
   end
+
+  def handle_tool(:translate, msg, state) do
+    # call to function, for example text translation via openai 3rds party api
+    # or to invoke another agent
+    {:ok, response, state}
+  end 
+
+  def check_message(%Triage{tool_call: true, tool: :translate, content: msg}, state) do
+    handle_tool(:translate, msg, state)
+  end
+  def check_message(%Triage{tool_call: false, content: msg}, state) do
+    {:ok, response, state}
+  end 
 end
 
 # Add an agent to the network
 {:ok, agent_pid} = SwarmEx.create_agent(network, MyAgent)
 
 # Send a message
-SwarmEx.send_message(agent_pid, "Hello!")
+SwarmEx.send_message(agent_pid, "Hello, how are you!")
 ```
 
 ## Documentation
