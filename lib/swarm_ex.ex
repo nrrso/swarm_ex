@@ -43,7 +43,7 @@ defmodule SwarmEx do
       {:ok, response} = SwarmEx.send_message(agent_pid, "Hello!")
   """
 
-  alias SwarmEx.{Client, Agent, Error}
+  alias SwarmEx.{Client, Agent, Error, ClientSupervisor}
 
   @type network :: pid()
   @type agent :: pid() | String.t()
@@ -67,7 +67,13 @@ defmodule SwarmEx do
   """
   @spec create_network(keyword()) :: {:ok, network()} | {:error, term()}
   def create_network(opts \\ []) do
-    Client.start_link(opts)
+    case ClientSupervisor.start_client(opts) do
+      {:ok, pid} = success ->
+        success
+
+      {:error, reason} ->
+        {:error, Error.NetworkError.exception(reason: reason)}
+    end
   end
 
   @doc """
@@ -86,7 +92,13 @@ defmodule SwarmEx do
   """
   @spec create_agent(network(), module(), keyword()) :: {:ok, agent()} | {:error, term()}
   def create_agent(network, agent_module, opts \\ []) do
-    Client.create_agent(network, agent_module, opts)
+    case Client.create_agent(network, agent_module, opts) do
+      {:ok, pid} = success ->
+        success
+
+      {:error, reason} ->
+        {:error, Error.AgentError.exception(agent: agent_module, reason: reason)}
+    end
   end
 
   @doc """
@@ -98,7 +110,17 @@ defmodule SwarmEx do
   """
   @spec send_message_to_pid(pid(), message()) :: response()
   def send_message_to_pid(agent_pid, message) when is_pid(agent_pid) do
-    GenServer.call(agent_pid, {:message, message})
+    try do
+      GenServer.call(agent_pid, {:message, message})
+    catch
+      :exit, reason ->
+        {:error,
+         Error.AgentError.exception(
+           agent: agent_pid,
+           reason: reason,
+           message: "Failed to send message to agent"
+         )}
+    end
   end
 
   @doc """
@@ -110,7 +132,18 @@ defmodule SwarmEx do
   """
   @spec send_message(network(), String.t(), message()) :: response()
   def send_message(network, agent_id, message) when is_pid(network) and is_binary(agent_id) do
-    Client.send_message(network, agent_id, message)
+    case Client.send_message(network, agent_id, message) do
+      {:ok, response} = success ->
+        success
+
+      {:error, reason} ->
+        {:error,
+         Error.NetworkError.exception(
+           network_id: agent_id,
+           reason: reason,
+           message: "Failed to send message through network"
+         )}
+    end
   end
 
   @doc """
@@ -122,7 +155,13 @@ defmodule SwarmEx do
   """
   @spec list_agents(network()) :: {:ok, [String.t()]} | {:error, term()}
   def list_agents(network) do
-    Client.list_agents(network)
+    case Client.list_agents(network) do
+      {:ok, agents} = success ->
+        success
+
+      {:error, reason} ->
+        {:error, Error.NetworkError.exception(reason: reason)}
+    end
   end
 
   @doc """
@@ -134,7 +173,13 @@ defmodule SwarmEx do
   """
   @spec update_context(network(), map()) :: :ok | {:error, term()}
   def update_context(network, context) when is_map(context) do
-    Client.update_context(network, context)
+    case Client.update_context(network, context) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        {:error, Error.NetworkError.exception(reason: reason)}
+    end
   end
 
   @doc """
@@ -156,7 +201,13 @@ defmodule SwarmEx do
       "SwarmEx.register_tool/2 is deprecated. Tools should be implemented as regular modules with functions."
     )
 
-    SwarmEx.Tool.register(tool_module, opts)
+    case SwarmEx.Tool.register(tool_module, opts) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        {:error, Error.ToolError.exception(tool: tool_module, reason: reason)}
+    end
   end
 
   @doc """
@@ -169,12 +220,18 @@ defmodule SwarmEx do
   """
   @spec stop_agent(agent(), term()) :: :ok | {:error, term()}
   def stop_agent(agent, reason \\ :normal) do
-    Agent.stop(agent, reason)
+    case Agent.stop(agent, reason) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        {:error, Error.AgentError.exception(agent: agent, reason: reason)}
+    end
   end
 
   @doc """
   Returns the version of the SwarmEx library.
   """
   @spec version() :: String.t()
-  def version, do: "0.1.0"
+  def version, do: "0.2.0"
 end

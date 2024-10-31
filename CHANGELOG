@@ -1,5 +1,18 @@
-# Changelog for swarm_ex 0.1.0
+# Changelog for swarm_ex
+
+## v0.2.0
+
+### Stability Improvements
+
+- Implement proper agent shutdown cleanup in terminate/2 callback
+- Add validation for agent configuration in init/1
+- Consider adding agent health checks and automatic recovery
+- Add more specific error types in errors.ex for different failure scenarios
+- Add automatic retry strategies for transient failures
+- Implement proper error propagation through supervision tree
 
 ## v0.1.0
 
 ### Initial Alpha Release
+
+This is the initial alpha release of `swarm_ex`. It includes basic functionality to create a Swarm network and perform some basic agent operations
