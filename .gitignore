@@ -27,3 +27,5 @@ swarm_ex-*.tar
 
 
 .env
+
+*.todo

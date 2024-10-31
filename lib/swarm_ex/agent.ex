@@ -4,11 +4,18 @@ defmodule SwarmEx.Agent do
 
   Each agent in the SwarmEx system is a process that can:
   - Process messages from other agents or clients
-  - Execute tools and handle their results
   - Maintain internal state
   - Participate in agent networks
+  - Execute functions from tool modules
 
   ## Example
+
+      defmodule ClassifyTool do
+        def classify(text) do
+          # Perform classification
+          {:ok, result}
+        end
+      end
 
       defmodule MyAgent do
         use SwarmEx.Agent
@@ -19,13 +26,10 @@ defmodule SwarmEx.Agent do
         end
 
         def handle_message(msg, state) do
-          # Handle incoming message
-          {:ok, response, state}
-        end
-
-        def handle_tool(tool_name, args, state) do
-          # Execute tool functionality
-          {:ok, result, state}
+          case ClassifyTool.classify(msg) do
+            {:ok, result} -> {:ok, result, state}
+            error -> error
+          end
         end
       end
   """
@@ -35,8 +39,6 @@ defmodule SwarmEx.Agent do
 
   @type state :: term()
   @type message :: term()
-  @type tool :: atom()
-  @type tool_args :: term()
   @type error :: {:error, term()}
   @type response :: {:ok, term(), state()} | {:error, term()}
 
@@ -44,10 +46,9 @@ defmodule SwarmEx.Agent do
   @callback handle_message(message(), state()) :: response()
 
   # Optional callbacks
-  @callback handle_tool(tool(), tool_args(), state()) :: response()
   @callback handle_handoff(target :: pid(), state()) :: {:ok, state()} | error()
 
-  @optional_callbacks [handle_tool: 3, handle_handoff: 2]
+  @optional_callbacks [handle_handoff: 2]
 
   defmacro __using__(opts) do
     quote location: :keep do
@@ -74,10 +75,6 @@ defmodule SwarmEx.Agent do
         GenServer.call(via_tuple(agent), {:message, message})
       end
 
-      def execute_tool(agent, tool, args) do
-        GenServer.call(via_tuple(agent), {:tool, tool, args})
-      end
-
       def get_state(agent) do
         GenServer.call(via_tuple(agent), :get_state)
       end
@@ -89,27 +86,15 @@ defmodule SwarmEx.Agent do
       # GenServer Implementation
       @impl true
       def handle_call({:message, message}, _from, state) do
-        Telemetry.span_agent_message(self(), :message, fn ->
+        network_id = state[:network_id] || "default"
+
+        Telemetry.span_agent_message(self(), :message, network_id, fn ->
           case handle_message(message, state) do
             {:ok, response, new_state} ->
               {:reply, {:ok, response}, new_state}
 
             {:error, reason} = error ->
               Logger.error("Message handling failed: #{inspect(reason)}")
-              {:reply, error, state}
-          end
-        end)
-      end
-
-      @impl true
-      def handle_call({:tool, tool, args}, _from, state) do
-        Telemetry.span_tool_execution(tool, self(), args, fn ->
-          case handle_tool(tool, args, state) do
-            {:ok, result, new_state} ->
-              {:reply, {:ok, result}, new_state}
-
-            {:error, reason} = error ->
-              Logger.error("Tool execution failed: #{inspect(reason)}")
               {:reply, error, state}
           end
         end)
@@ -146,7 +131,7 @@ defmodule SwarmEx.Agent do
   """
   @spec validate_agent(module()) :: :ok | {:error, term()}
   def validate_agent(module) do
-    required_callbacks = [{:init, 1}, {:handle_message, 2}, {:handle_tool, 3}]
+    required_callbacks = [{:init, 1}, {:handle_message, 2}]
 
     missing_callbacks =
       Enum.filter(required_callbacks, fn {fun, arity} ->

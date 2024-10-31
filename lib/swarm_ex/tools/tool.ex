@@ -1,18 +1,12 @@
 defmodule SwarmEx.Tool do
   @moduledoc """
-  Defines the behavior and functionality for agent tools.
+  DEPRECATED: This module is deprecated. Tools should be implemented as regular modules with functions instead.
 
-  Tools are capabilities that agents can use to perform specific tasks. Each tool
-  must implement this behavior to be usable within the SwarmEx system.
+  ## Migration Guide
 
-  ## Tool Configuration
+  Instead of using the Tool behavior, define your tools as regular modules with functions:
 
-  Tools can be configured with the following options:
-    * `:timeout` - Maximum time in milliseconds to wait for tool execution (default: 5000)
-    * `:retries` - Number of retry attempts for failed executions (default: 3)
-    * `:validate_args` - Whether to validate arguments before execution (default: true)
-
-  ## Example
+  ### Before:
 
       defmodule MyTool do
         @behaviour SwarmEx.Tool
@@ -35,6 +29,41 @@ defmodule SwarmEx.Tool do
           :ok
         end
       end
+
+  ### After:
+
+      defmodule MyTool do
+        def process(args) do
+          # Validate args if needed
+          with :ok <- validate_args(args),
+               {:ok, result} <- do_process(args) do
+            cleanup(args)
+            {:ok, result}
+          end
+        end
+
+        defp validate_args(args) do
+          # Optional validation
+          :ok
+        end
+
+        defp do_process(args) do
+          # Main processing logic
+          {:ok, result}
+        end
+
+        defp cleanup(args) do
+          # Optional cleanup
+          :ok
+        end
+      end
+
+  The new approach:
+  - Is simpler and more idiomatic Elixir
+  - Gives more flexibility in function naming and implementation
+  - Allows for better integration with other libraries
+  - Reduces boilerplate code
+  - Makes testing easier
   """
 
   require Logger
@@ -57,23 +86,21 @@ defmodule SwarmEx.Tool do
   @callback cleanup(args()) :: cleanup_result()
 
   @doc """
+  DEPRECATED: Use direct function calls instead.
+
   Safely executes a tool with the given arguments and options.
 
   ## Options
     * `:timeout` - Maximum time in milliseconds to wait (default: 5000)
     * `:retries` - Number of retry attempts (default: 3)
     * `:validate_args` - Whether to validate arguments (default: true)
-
-  ## Examples
-
-      iex> SwarmEx.Tool.execute(MyTool, args, timeout: 10_000)
-      {:ok, result}
-
-      iex> SwarmEx.Tool.execute(InvalidTool, bad_args)
-      {:error, :validation_failed}
   """
+  @deprecated "Tools should be implemented as regular modules with functions"
   @spec execute(t(), args(), options()) :: result()
   def execute(tool, args, opts \\ []) do
+    require Logger
+    Logger.warning("SwarmEx.Tool.execute/3 is deprecated. Use direct function calls instead.")
+
     opts = normalize_options(opts)
 
     with :ok <- validate_tool(tool),
@@ -88,18 +115,11 @@ defmodule SwarmEx.Tool do
   end
 
   @doc """
+  DEPRECATED: Use regular module definition instead.
+
   Validates that a module implements the Tool behavior correctly.
-
-  Returns `:ok` if the tool is valid, `{:error, reason}` otherwise.
-
-  ## Examples
-
-      iex> SwarmEx.Tool.validate_tool(MyTool)
-      :ok
-
-      iex> SwarmEx.Tool.validate_tool(InvalidModule)
-      {:error, :invalid_tool}
   """
+  @deprecated "Tools should be implemented as regular modules with functions"
   @spec validate_tool(t()) :: :ok | {:error, term()}
   def validate_tool(tool) when is_atom(tool) do
     required_callbacks = [:execute, :validate, :cleanup]
@@ -116,6 +136,47 @@ defmodule SwarmEx.Tool do
   end
 
   def validate_tool(_), do: {:error, :invalid_tool}
+
+  @doc """
+  DEPRECATED: Use regular module configuration instead.
+
+  Registers a tool configuration in the runtime.
+  """
+  @deprecated "Tools should be implemented as regular modules with functions"
+  @spec register(t(), keyword()) :: :ok | {:error, term()}
+  def register(tool, config \\ []) when is_atom(tool) and is_list(config) do
+    require Logger
+
+    Logger.warning(
+      "SwarmEx.Tool.register/2 is deprecated. Use regular module configuration instead."
+    )
+
+    with :ok <- validate_tool(tool),
+         :ok <- validate_config(config) do
+      :persistent_term.put({__MODULE__, tool}, config)
+      :ok
+    end
+  end
+
+  @doc """
+  DEPRECATED: Use regular module configuration instead.
+
+  Retrieves the configuration for a registered tool.
+  """
+  @deprecated "Tools should be implemented as regular modules with functions"
+  @spec get_config(t()) :: {:ok, keyword()} | {:error, term()}
+  def get_config(tool) when is_atom(tool) do
+    require Logger
+
+    Logger.warning(
+      "SwarmEx.Tool.get_config/1 is deprecated. Use regular module configuration instead."
+    )
+
+    case :persistent_term.get({__MODULE__, tool}, :not_found) do
+      :not_found -> {:error, :not_registered}
+      config -> {:ok, config}
+    end
+  end
 
   # Private Functions
 
@@ -156,44 +217,6 @@ defmodule SwarmEx.Tool do
       e ->
         Logger.warning("Tool cleanup failed: #{inspect(e)}")
         :ok
-    end
-  end
-
-  @doc """
-  Registers a tool configuration in the runtime.
-  This allows for dynamic tool configuration and validation.
-
-  ## Examples
-
-      iex> SwarmEx.Tool.register(MyTool, max_retries: 5)
-      :ok
-  """
-  @spec register(t(), keyword()) :: :ok | {:error, term()}
-  def register(tool, config \\ []) when is_atom(tool) and is_list(config) do
-    with :ok <- validate_tool(tool),
-         :ok <- validate_config(config) do
-      # Store tool configuration in persistent term for fast access
-      :persistent_term.put({__MODULE__, tool}, config)
-      :ok
-    end
-  end
-
-  @doc """
-  Retrieves the configuration for a registered tool.
-
-  ## Examples
-
-      iex> SwarmEx.Tool.get_config(MyTool)
-      {:ok, [max_retries: 5]}
-
-      iex> SwarmEx.Tool.get_config(UnregisteredTool)
-      {:error, :not_registered}
-  """
-  @spec get_config(t()) :: {:ok, keyword()} | {:error, term()}
-  def get_config(tool) when is_atom(tool) do
-    case :persistent_term.get({__MODULE__, tool}, :not_found) do
-      :not_found -> {:error, :not_registered}
-      config -> {:ok, config}
     end
   end
 

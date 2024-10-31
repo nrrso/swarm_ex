@@ -6,7 +6,6 @@ defmodule SwarmEx do
 
   - Agent lifecycle management
   - Message routing between agents
-  - Tool integration and execution
   - Network state management
   - Error handling and recovery
 
@@ -15,18 +14,25 @@ defmodule SwarmEx do
       # Create a new agent network
       {:ok, network} = SwarmEx.create_network()
 
-      # Define an agent
+      # Define a tool as a regular module with functions
+      defmodule ClassifyTool do
+        def classify(text) do
+          # Perform classification
+          {:ok, result}
+        end
+      end
+
+      # Define an agent that uses the tool
       defmodule MyAgent do
         use SwarmEx.Agent
 
         def init(opts), do: {:ok, opts}
 
         def handle_message(msg, state) do
-          {:ok, "Echo: \#{msg}", state}
-        end
-
-        def handle_tool(:example, args, state) do
-          {:ok, args, state}
+          case ClassifyTool.classify(msg) do
+            {:ok, result} -> {:ok, result, state}
+            error -> error
+          end
         end
       end
 
@@ -37,7 +43,7 @@ defmodule SwarmEx do
       {:ok, response} = SwarmEx.send_message(agent_pid, "Hello!")
   """
 
-  alias SwarmEx.{Client, Agent, Tool, Error}
+  alias SwarmEx.{Client, Agent, Error}
 
   @type network :: pid()
   @type agent :: pid() | String.t()
@@ -70,7 +76,6 @@ defmodule SwarmEx do
   ## Options
 
     * `:name` - Optional name for the agent
-    * `:tools` - List of tools available to the agent
     * `:instruction` - Base instruction/prompt for the agent
     * All other options are passed to the agent's init/1 callback
 
@@ -135,13 +140,23 @@ defmodule SwarmEx do
   @doc """
   Registers a new tool that can be used by agents in the network.
 
+  This function is deprecated. Instead of using the Tool API, define your tools as regular modules
+  with functions. See the module documentation for examples.
+
   ## Examples
 
       SwarmEx.register_tool(MyTool, max_retries: 3)
   """
+  @deprecated "Tools should be implemented as regular modules with functions instead of using the Tool API"
   @spec register_tool(module(), keyword()) :: :ok | {:error, term()}
   def register_tool(tool_module, opts \\ []) do
-    Tool.register(tool_module, opts)
+    require Logger
+
+    Logger.warning(
+      "SwarmEx.register_tool/2 is deprecated. Tools should be implemented as regular modules with functions."
+    )
+
+    SwarmEx.Tool.register(tool_module, opts)
   end
 
   @doc """
