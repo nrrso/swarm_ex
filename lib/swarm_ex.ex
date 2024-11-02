@@ -68,7 +68,7 @@ defmodule SwarmEx do
   @spec create_network(keyword()) :: {:ok, network()} | {:error, term()}
   def create_network(opts \\ []) do
     case ClientSupervisor.start_client(opts) do
-      {:ok, pid} = success ->
+      {:ok, _pid} = success ->
         success
 
       {:error, reason} ->
@@ -93,7 +93,7 @@ defmodule SwarmEx do
   @spec create_agent(network(), module(), keyword()) :: {:ok, agent()} | {:error, term()}
   def create_agent(network, agent_module, opts \\ []) do
     case Client.create_agent(network, agent_module, opts) do
-      {:ok, pid} = success ->
+      {:ok, _pid} = success ->
         success
 
       {:error, reason} ->
@@ -133,7 +133,7 @@ defmodule SwarmEx do
   @spec send_message(network(), String.t(), message()) :: response()
   def send_message(network, agent_id, message) when is_pid(network) and is_binary(agent_id) do
     case Client.send_message(network, agent_id, message) do
-      {:ok, response} = success ->
+      {:ok, _response} = success ->
         success
 
       {:error, reason} ->
@@ -156,7 +156,7 @@ defmodule SwarmEx do
   @spec list_agents(network()) :: {:ok, [String.t()]} | {:error, term()}
   def list_agents(network) do
     case Client.list_agents(network) do
-      {:ok, agents} = success ->
+      {:ok, _agents} = success ->
         success
 
       {:error, reason} ->
@@ -169,13 +169,31 @@ defmodule SwarmEx do
 
   ## Examples
 
-      :ok = SwarmEx.update_context(network, %{key: "value"})
+      {:ok, context} = SwarmEx.update_context(network, %{key: "value"})
   """
-  @spec update_context(network(), map()) :: :ok | {:error, term()}
+  @spec update_context(network(), map()) :: {:ok, map()} | {:error, term()}
   def update_context(network, context) when is_map(context) do
     case Client.update_context(network, context) do
-      :ok ->
-        :ok
+      {:ok, _context} = success ->
+        success
+
+      {:error, reason} ->
+        {:error, Error.NetworkError.exception(reason: reason)}
+    end
+  end
+
+  @doc """
+  Gets the current context for a network of agents.
+
+  ## Examples
+
+      {:ok, context} = SwarmEx.get_context(network)
+  """
+  @spec get_context(network()) :: {:ok, map()} | {:error, term()}
+  def get_context(network) do
+    case Client.get_context(network) do
+      {:ok, _context} = success ->
+        success
 
       {:error, reason} ->
         {:error, Error.NetworkError.exception(reason: reason)}

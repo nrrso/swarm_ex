@@ -205,7 +205,7 @@ defmodule SwarmEx.Telemetry do
         )
 
       nil ->
-        Logger.warn("Cannot report memory for non-existent agent #{inspect(agent_id)}")
+        Logger.warning("Cannot report memory for non-existent agent #{inspect(agent_id)}")
     end
   end
 

@@ -8,7 +8,7 @@ defmodule SwarmEx.ClientSupervisor do
 
   use DynamicSupervisor
   require Logger
-  alias SwarmEx.{Client, Error}
+  alias SwarmEx.Client
 
   def start_link(init_arg) do
     DynamicSupervisor.start_link(__MODULE__, init_arg, name: __MODULE__)

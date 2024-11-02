@@ -12,7 +12,7 @@ defmodule SwarmEx.Client do
 
   use GenServer
   require Logger
-  alias SwarmEx.{Agent, Error, Utils}
+  alias SwarmEx.{Agent, Utils}
 
   @type t :: %__MODULE__{
           context: map(),
@@ -70,9 +70,17 @@ defmodule SwarmEx.Client do
   @doc """
   Updates the network context with new values.
   """
-  @spec update_context(GenServer.server(), map()) :: :ok | {:error, term()}
+  @spec update_context(GenServer.server(), map()) :: {:ok, map()} | {:error, term()}
   def update_context(client, context) when is_map(context) do
     GenServer.call(client, {:update_context, context})
+  end
+
+  @doc """
+  Gets the current network context.
+  """
+  @spec get_context(GenServer.server()) :: {:ok, map()} | {:error, term()}
+  def get_context(client) do
+    GenServer.call(client, :get_context)
   end
 
   @doc """
@@ -131,7 +139,12 @@ defmodule SwarmEx.Client do
   @impl true
   def handle_call({:update_context, new_context}, _from, state) do
     updated_context = Map.merge(state.context, new_context)
-    {:reply, :ok, %{state | context: updated_context}}
+    {:reply, {:ok, updated_context}, %{state | context: updated_context}}
+  end
+
+  @impl true
+  def handle_call(:get_context, _from, state) do
+    {:reply, {:ok, state.context}, state}
   end
 
   @impl true
