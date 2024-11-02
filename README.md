@@ -11,7 +11,7 @@ The package can be installed by adding `swarm_ex` to your list of dependencies i
 ```elixir
 def deps do
   [
-    {:swarm_ex, "~> 0.1.0"}
+    {:swarm_ex, "~> 0.2.0"}
   ]
 end
 ```
