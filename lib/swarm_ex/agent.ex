@@ -13,11 +13,49 @@ defmodule SwarmEx.Agent do
   require Logger
   alias SwarmEx.{Error, Telemetry, Utils}
 
+  @typedoc "Basic agent state"
   @type state :: term()
+
+  @typedoc "Message that can be processed by an agent"
   @type message :: term()
+
+  @typedoc "Error response tuple"
   @type error :: {:error, term()}
+
+  @typedoc "Response from message handling"
   @type response :: {:ok, term(), state()} | {:error, term()}
+
+  @typedoc "Health status of an agent"
   @type health_status :: :healthy | :degraded | :unhealthy
+
+  @typedoc "Agent configuration options"
+  @type agent_opts :: %{
+          optional(:name) => String.t(),
+          optional(:instruction) => String.t(),
+          optional(:network_id) => String.t(),
+          optional(:network_pid) => pid(),
+          optional(:health_check_interval) => non_neg_integer(),
+          optional(:recovery_max_retries) => non_neg_integer(),
+          optional(:recovery_backoff_ms) => non_neg_integer(),
+          optional(atom()) => term()
+        }
+
+  @typedoc "Agent state map"
+  @type agent_state :: %{
+          name: String.t() | nil,
+          instruction: String.t() | nil,
+          network_id: String.t() | nil,
+          network_pid: pid() | nil,
+          custom_opts: keyword(),
+          started_at: DateTime.t(),
+          health_status: health_status(),
+          health_check_interval: non_neg_integer(),
+          recovery_attempts: non_neg_integer(),
+          recovery_max_retries: non_neg_integer(),
+          recovery_backoff_ms: non_neg_integer(),
+          last_health_check: DateTime.t() | nil,
+          last_recovery_attempt: DateTime.t() | nil
+        }
 
   # Required callbacks for implementing agents
   @callback handle_message(message(), state()) :: response()
@@ -58,6 +96,8 @@ defmodule SwarmEx.Agent do
 
       # Default implementations that can be overridden
       @impl true
+      @spec init(SwarmEx.Agent.agent_opts()) ::
+              {:ok, SwarmEx.Agent.agent_state()} | {:error, term()}
       def init(opts) do
         with :ok <- validate_agent_config(opts) do
           # Initialize health check timer if enabled
@@ -97,6 +137,7 @@ defmodule SwarmEx.Agent do
       end
 
       @impl true
+      @spec terminate(term(), SwarmEx.Agent.agent_state()) :: :ok
       def terminate(reason, state) do
         # Get network ID for telemetry
         network_id = Map.get(state, :network_id, "default")
@@ -150,14 +191,20 @@ defmodule SwarmEx.Agent do
         :ok
       end
 
+      @spec handle_handoff(pid(), SwarmEx.Agent.agent_state()) ::
+              {:ok, SwarmEx.Agent.agent_state()}
       def handle_handoff(_target, state), do: {:ok, state}
 
       # Default health check implementation
+      @spec health_check(SwarmEx.Agent.agent_state()) ::
+              {:ok, SwarmEx.Agent.health_status(), SwarmEx.Agent.agent_state()}
       def health_check(state) do
         {:ok, :healthy, state}
       end
 
       # Default recovery implementation
+      @spec handle_recovery(term(), SwarmEx.Agent.agent_state()) ::
+              {:ok, SwarmEx.Agent.agent_state()}
       def handle_recovery(_reason, state) do
         {:ok, state}
       end
@@ -169,24 +216,32 @@ defmodule SwarmEx.Agent do
                      health_check: 1,
                      handle_recovery: 2
 
+      @spec start_link(SwarmEx.Agent.agent_opts()) :: GenServer.on_start()
       def start_link(opts) do
         GenServer.start_link(__MODULE__, opts, name: via_tuple(opts[:name]))
       end
 
+      @spec send_message(pid() | atom() | String.t(), term()) ::
+              {:ok, term()} | {:error, term()}
       def send_message(agent, message) do
         GenServer.call(via_tuple(agent), {:message, message})
       end
 
+      @spec get_state(pid() | atom() | String.t()) ::
+              {:ok, SwarmEx.Agent.agent_state()} | {:error, term()}
       def get_state(agent) do
         GenServer.call(via_tuple(agent), :get_state)
       end
 
+      @spec stop(pid() | atom() | String.t(), term()) :: :ok | {:error, term()}
       def stop(agent, reason \\ :normal) do
         GenServer.stop(via_tuple(agent), reason)
       end
 
       # GenServer Implementation
       @impl true
+      @spec handle_call(term(), GenServer.from(), SwarmEx.Agent.agent_state()) ::
+              {:reply, term(), SwarmEx.Agent.agent_state()}
       def handle_call({:message, message}, _from, state) do
         if Map.get(state, :health_status) == :unhealthy do
           error =
@@ -226,6 +281,8 @@ defmodule SwarmEx.Agent do
       end
 
       @impl true
+      @spec handle_info(term(), SwarmEx.Agent.agent_state()) ::
+              {:noreply, SwarmEx.Agent.agent_state()}
       def handle_info(:health_check, state) do
         # Schedule next health check
         if Map.get(state, :health_check_interval, 0) > 0 do
@@ -301,6 +358,8 @@ defmodule SwarmEx.Agent do
       end
 
       # Recovery handling
+      @spec attempt_recovery(Error.AgentError.t(), SwarmEx.Agent.agent_state()) ::
+              {:reply, term(), SwarmEx.Agent.agent_state()}
       defp attempt_recovery(error, state) do
         recovery_attempts = Map.get(state, :recovery_attempts, 0)
 
@@ -362,6 +421,7 @@ defmodule SwarmEx.Agent do
       end
 
       # Configuration validation
+      @spec validate_agent_config(SwarmEx.Agent.agent_opts()) :: :ok | {:error, term()}
       defp validate_agent_config(opts) do
         with :ok <- validate_name(opts[:name]),
              :ok <- validate_instruction(opts[:instruction]),
@@ -372,6 +432,7 @@ defmodule SwarmEx.Agent do
         end
       end
 
+      @spec validate_name(String.t() | nil) :: :ok | {:error, String.t()}
       defp validate_name(nil), do: :ok
 
       defp validate_name(name) when is_binary(name) do
@@ -391,6 +452,7 @@ defmodule SwarmEx.Agent do
 
       defp validate_name(_), do: {:error, "Agent name must be a string or nil"}
 
+      @spec validate_instruction(String.t() | nil) :: :ok | {:error, String.t()}
       defp validate_instruction(nil), do: :ok
 
       defp validate_instruction(instruction) when is_binary(instruction) do
@@ -410,6 +472,7 @@ defmodule SwarmEx.Agent do
 
       defp validate_instruction(_), do: {:error, "Instruction must be a string or nil"}
 
+      @spec validate_network_config(SwarmEx.Agent.agent_opts()) :: :ok | {:error, String.t()}
       defp validate_network_config(opts) do
         network_id = opts[:network_id]
         network_pid = opts[:network_pid]
@@ -423,6 +486,7 @@ defmodule SwarmEx.Agent do
         end
       end
 
+      @spec validate_health_check_config(SwarmEx.Agent.agent_opts()) :: :ok | {:error, String.t()}
       defp validate_health_check_config(opts) do
         interval = opts[:health_check_interval] || unquote(@default_health_check_interval)
         max_retries = opts[:recovery_max_retries] || unquote(@default_recovery_max_retries)
@@ -443,6 +507,7 @@ defmodule SwarmEx.Agent do
         end
       end
 
+      @spec validate_custom_opts(SwarmEx.Agent.agent_opts()) :: :ok | {:error, String.t()}
       defp validate_custom_opts(opts) do
         custom_opts = filter_custom_opts(opts)
 
@@ -453,6 +518,7 @@ defmodule SwarmEx.Agent do
         end
       end
 
+      @spec filter_custom_opts(SwarmEx.Agent.agent_opts()) :: keyword()
       defp filter_custom_opts(opts) do
         reserved_keys = [
           :name,
@@ -468,6 +534,7 @@ defmodule SwarmEx.Agent do
       end
 
       # Private Functions
+      @spec via_tuple(String.t() | atom() | pid()) :: {:via, Registry, {atom(), term()}} | pid()
       defp via_tuple(name) when is_binary(name) or is_atom(name) do
         {:via, Registry, {SwarmEx.AgentRegistry, name}}
       end
@@ -552,6 +619,7 @@ defmodule SwarmEx.Agent do
 
   # Private Functions
 
+  @spec via_tuple(String.t() | atom() | pid()) :: {:via, Registry, {atom(), term()}} | pid()
   defp via_tuple(name) when is_binary(name) or is_atom(name) do
     {:via, Registry, {SwarmEx.AgentRegistry, name}}
   end

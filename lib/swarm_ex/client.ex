@@ -14,12 +14,33 @@ defmodule SwarmEx.Client do
   require Logger
   alias SwarmEx.{Agent, Utils}
 
+  @typedoc "Client state structure"
   @type t :: %__MODULE__{
-          context: map(),
-          active_agents: %{optional(String.t()) => pid()},
-          network_id: String.t(),
+          context: context(),
+          active_agents: agents_map(),
+          network_id: network_id(),
           options: keyword()
         }
+
+  @typedoc "Network context map containing shared state"
+  @type context :: %{optional(atom() | String.t()) => term()}
+
+  @typedoc "Map of agent IDs to their process IDs"
+  @type agents_map :: %{optional(agent_id()) => pid()}
+
+  @typedoc "Network identifier"
+  @type network_id :: String.t()
+
+  @typedoc "Agent identifier"
+  @type agent_id :: String.t()
+
+  @typedoc "Client options for initialization"
+  @type client_opts :: [
+          name: atom() | String.t(),
+          network_id: network_id(),
+          context: context(),
+          registry: atom()
+        ]
 
   defstruct context: %{},
             active_agents: %{},
@@ -36,7 +57,7 @@ defmodule SwarmEx.Client do
     * `:context` - Initial context map (default: %{})
     * `:registry` - Custom registry for agent processes (optional)
   """
-  @spec start_link(keyword()) :: GenServer.on_start()
+  @spec start_link(client_opts()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     {name, opts} = Keyword.pop(opts, :name)
 
@@ -61,7 +82,7 @@ defmodule SwarmEx.Client do
   @doc """
   Sends a message to a specific agent in the network.
   """
-  @spec send_message(GenServer.server(), String.t(), term()) ::
+  @spec send_message(GenServer.server(), agent_id(), term()) ::
           {:ok, term()} | {:error, term()}
   def send_message(client, agent_id, message) do
     GenServer.call(client, {:send_message, agent_id, message})
@@ -70,7 +91,7 @@ defmodule SwarmEx.Client do
   @doc """
   Updates the network context with new values.
   """
-  @spec update_context(GenServer.server(), map()) :: {:ok, map()} | {:error, term()}
+  @spec update_context(GenServer.server(), context()) :: {:ok, context()} | {:error, term()}
   def update_context(client, context) when is_map(context) do
     GenServer.call(client, {:update_context, context})
   end
@@ -78,7 +99,7 @@ defmodule SwarmEx.Client do
   @doc """
   Gets the current network context.
   """
-  @spec get_context(GenServer.server()) :: {:ok, map()} | {:error, term()}
+  @spec get_context(GenServer.server()) :: {:ok, context()} | {:error, term()}
   def get_context(client) do
     GenServer.call(client, :get_context)
   end
@@ -86,7 +107,7 @@ defmodule SwarmEx.Client do
   @doc """
   Lists all active agents in the network.
   """
-  @spec list_agents(GenServer.server()) :: {:ok, [String.t()]} | {:error, term()}
+  @spec list_agents(GenServer.server()) :: {:ok, [agent_id()]} | {:error, term()}
   def list_agents(client) do
     GenServer.call(client, :list_agents)
   end
@@ -94,6 +115,7 @@ defmodule SwarmEx.Client do
   # Server Callbacks
 
   @impl true
+  @spec init(client_opts()) :: {:ok, t()}
   def init(opts) do
     network_id = opts[:network_id] || Utils.generate_id("network")
 
@@ -107,6 +129,8 @@ defmodule SwarmEx.Client do
   end
 
   @impl true
+  @spec handle_call(term(), GenServer.from(), t()) ::
+          {:reply, term(), t()}
   def handle_call({:create_agent, agent_module, opts}, _from, state) do
     opts = Keyword.merge(opts, network_id: state.network_id, context: state.context)
 
@@ -124,7 +148,6 @@ defmodule SwarmEx.Client do
     end
   end
 
-  @impl true
   def handle_call({:send_message, agent_id, message}, _from, state) do
     case Map.fetch(state.active_agents, agent_id) do
       {:ok, pid} ->
@@ -136,24 +159,22 @@ defmodule SwarmEx.Client do
     end
   end
 
-  @impl true
   def handle_call({:update_context, new_context}, _from, state) do
     updated_context = Map.merge(state.context, new_context)
     {:reply, {:ok, updated_context}, %{state | context: updated_context}}
   end
 
-  @impl true
   def handle_call(:get_context, _from, state) do
     {:reply, {:ok, state.context}, state}
   end
 
-  @impl true
   def handle_call(:list_agents, _from, state) do
     agents = Map.keys(state.active_agents)
     {:reply, {:ok, agents}, state}
   end
 
   @impl true
+  @spec handle_info(term(), t()) :: {:noreply, t()}
   def handle_info({:DOWN, _ref, :process, pid, reason}, state) do
     # Handle agent process termination
     case find_agent_id(state.active_agents, pid) do
@@ -171,10 +192,12 @@ defmodule SwarmEx.Client do
 
   # Private Functions
 
+  @spec via_tuple(atom() | String.t()) :: {:via, Registry, {atom(), term()}}
   defp via_tuple(name) when is_binary(name) or is_atom(name) do
     {:via, Registry, {SwarmEx.AgentRegistry, {:client, name}}}
   end
 
+  @spec find_agent_id(agents_map(), pid()) :: {:ok, agent_id()} | :error
   defp find_agent_id(agents, target_pid) do
     case Enum.find(agents, fn {_id, pid} -> pid == target_pid end) do
       {id, _pid} -> {:ok, id}

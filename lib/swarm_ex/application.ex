@@ -7,7 +7,11 @@ defmodule SwarmEx.Application do
   use Application
   require Logger
 
+  @type child_spec :: Supervisor.child_spec() | {module(), term()} | module()
+  @type start_type :: :normal | {:takeover, node()} | {:failover, node()}
+
   @impl true
+  @spec start(start_type(), term()) :: {:ok, pid()} | {:error, term()}
   def start(_type, _args) do
     children = [
       # Registry for tracking agent processes
@@ -44,11 +48,13 @@ defmodule SwarmEx.Application do
   end
 
   @impl true
+  @spec stop(term()) :: :ok
   def stop(_state) do
     Logger.info("Stopping SwarmEx application")
     :ok
   end
 
+  @spec configure_logging() :: :ok
   defp configure_logging do
     # Set log level based on environment
     log_level = Application.get_env(:swarm_ex, :log_level, :info)
@@ -65,5 +71,7 @@ defmodule SwarmEx.Application do
     if formatter = Application.get_env(:swarm_ex, :log_formatter) do
       Logger.configure(formatter: formatter)
     end
+
+    :ok
   end
 end

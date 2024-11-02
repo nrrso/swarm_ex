@@ -10,11 +10,19 @@ defmodule SwarmEx.ClientSupervisor do
   require Logger
   alias SwarmEx.Client
 
+  @typedoc "Options for starting a client"
+  @type start_opts :: Client.client_opts()
+
+  @doc """
+  Starts the client supervisor.
+  """
+  @spec start_link(term()) :: Supervisor.on_start()
   def start_link(init_arg) do
     DynamicSupervisor.start_link(__MODULE__, init_arg, name: __MODULE__)
   end
 
   @impl true
+  @spec init(term()) :: {:ok, DynamicSupervisor.sup_flags()}
   def init(_init_arg) do
     DynamicSupervisor.init(
       strategy: :one_for_one,
@@ -26,7 +34,7 @@ defmodule SwarmEx.ClientSupervisor do
   @doc """
   Starts a new client process under supervision.
   """
-  @spec start_client(keyword()) :: DynamicSupervisor.on_start_child()
+  @spec start_client(start_opts()) :: DynamicSupervisor.on_start_child()
   def start_client(opts \\ []) do
     case DynamicSupervisor.start_child(__MODULE__, {Client, opts}) do
       {:ok, pid} = success ->
@@ -42,7 +50,7 @@ defmodule SwarmEx.ClientSupervisor do
   @doc """
   Terminates a client process and all its associated agents.
   """
-  @spec terminate_client(pid()) :: :ok | {:error, term()}
+  @spec terminate_client(pid()) :: :ok | {:error, :not_found | :simple_one_for_one}
   def terminate_client(client_pid) when is_pid(client_pid) do
     case DynamicSupervisor.terminate_child(__MODULE__, client_pid) do
       :ok ->

@@ -7,12 +7,25 @@ defmodule SwarmEx.Utils do
   require Logger
   alias SwarmEx.Error
 
+  @typedoc "Options for retry operations"
   @type retry_opts :: [
           timeout: non_neg_integer(),
           retries: non_neg_integer(),
           backoff_base: non_neg_integer(),
           backoff_type: :exponential | :linear
         ]
+
+  @typedoc "Schema validation options"
+  @type schema_opts :: [
+          required: [atom()],
+          optional: [atom()]
+        ]
+
+  @typedoc "Log level"
+  @type log_level :: :debug | :info | :warn | :error
+
+  @typedoc "Log metadata"
+  @type log_metadata :: keyword()
 
   @doc """
   Safely executes a function with timeout and retry logic.
@@ -22,16 +35,9 @@ defmodule SwarmEx.Utils do
     * `:retries` - Number of retry attempts (default: 3)
     * `:backoff_base` - Base time in milliseconds for backoff calculation (default: 100)
     * `:backoff_type` - Type of backoff, either :exponential or :linear (default: :exponential)
-
-  ## Examples
-
-      iex> safely_execute(fn -> {:ok, :success} end)
-      {:ok, :success}
-
-      iex> safely_execute(fn -> raise "error" end)
-      {:error, %RuntimeError{message: "error"}}
   """
-  @spec safely_execute(function(), retry_opts()) :: {:ok, term()} | {:error, term()}
+  @spec safely_execute((-> result), retry_opts()) :: {:ok, result} | {:error, term()}
+        when result: term()
   def safely_execute(fun, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, 5_000)
     retries = Keyword.get(opts, :retries, 3)
@@ -41,6 +47,8 @@ defmodule SwarmEx.Utils do
     do_safely_execute(fun, retries, timeout, backoff_base, backoff_type)
   end
 
+  @spec do_safely_execute((-> term()), integer(), integer(), integer(), :exponential | :linear) ::
+          {:ok, term()} | {:error, term()}
   defp do_safely_execute(_fun, retries, _timeout, _backoff_base, _backoff_type)
        when retries < 0 do
     {:error, :max_retries_reached}
@@ -64,6 +72,8 @@ defmodule SwarmEx.Utils do
     end
   end
 
+  @spec calculate_backoff(non_neg_integer(), non_neg_integer(), :exponential | :linear) ::
+          non_neg_integer()
   defp calculate_backoff(retry_count, base, :exponential) do
     trunc(base * :math.pow(2, retry_count))
   end
@@ -74,17 +84,8 @@ defmodule SwarmEx.Utils do
 
   @doc """
   Validates a map against a schema of required and optional keys.
-
-  ## Examples
-
-      iex> schema = [required: [:name, :age], optional: [:email]]
-      iex> validate_schema(%{name: "John", age: 30}, schema)
-      :ok
-
-      iex> validate_schema(%{name: "John"}, [required: [:name, :age]])
-      {:error, {:missing_required_keys, [:age]}}
   """
-  @spec validate_schema(map(), keyword()) :: :ok | {:error, term()}
+  @spec validate_schema(map(), schema_opts()) :: :ok | {:error, term()}
   def validate_schema(map, schema) do
     required_keys = Keyword.get(schema, :required, [])
     optional_keys = Keyword.get(schema, :optional, [])
@@ -96,6 +97,8 @@ defmodule SwarmEx.Utils do
     end
   end
 
+  @spec validate_required_keys(map(), [atom()]) ::
+          :ok | {:error, {:missing_required_keys, [atom()]}}
   defp validate_required_keys(map, required_keys) do
     missing_keys = Enum.filter(required_keys, &(not Map.has_key?(map, &1)))
 
@@ -105,6 +108,7 @@ defmodule SwarmEx.Utils do
     end
   end
 
+  @spec validate_unknown_keys(map(), [atom()]) :: :ok | {:error, {:unknown_keys, [atom()]}}
   defp validate_unknown_keys(map, valid_keys) do
     unknown_keys = Enum.filter(Map.keys(map), &(&1 not in valid_keys))
 
@@ -116,14 +120,6 @@ defmodule SwarmEx.Utils do
 
   @doc """
   Formats an error tuple into a standardized error structure.
-
-  ## Examples
-
-      iex> format_error({:error, "Something went wrong"})
-      %SwarmEx.Error.AgentError{message: "Something went wrong", reason: :unknown}
-
-      iex> format_error(%RuntimeError{message: "Oops"})
-      %SwarmEx.Error.AgentError{message: "Oops", reason: :runtime_error}
   """
   @spec format_error(term()) :: Error.AgentError.t()
   def format_error({:error, reason}) when is_binary(reason) do
@@ -158,14 +154,6 @@ defmodule SwarmEx.Utils do
 
   @doc """
   Generates a unique identifier with an optional prefix.
-
-  ## Examples
-
-      iex> generate_id()
-      "c1dd6960-7b91-4ca1-b853-c01c7f24d1aa"
-
-      iex> generate_id("user")
-      "user_c1dd6960-7b91-4ca1-b853-c01c7f24d1aa"
   """
   @spec generate_id(String.t() | nil) :: String.t()
   def generate_id(prefix \\ nil) do
@@ -175,14 +163,6 @@ defmodule SwarmEx.Utils do
 
   @doc """
   Serializes a term into a string representation.
-
-  ## Examples
-
-      iex> serialize(%{name: "John", age: 30})
-      {:ok, "{\":name\":\"John\",\":age\":30}"}
-
-      iex> serialize(%{invalid: make_ref()})
-      {:error, :unserializable_term}
   """
   @spec serialize(term()) :: {:ok, String.t()} | {:error, term()}
   def serialize(term) do
@@ -202,14 +182,6 @@ defmodule SwarmEx.Utils do
 
   @doc """
   Deserializes a string back into a term.
-
-  ## Examples
-
-      iex> deserialize("{\":name\":\"John\",\":age\":30}")
-      {:ok, %{name: "John", age: 30}}
-
-      iex> deserialize("invalid json")
-      {:error, :invalid_json}
   """
   @spec deserialize(String.t()) :: {:ok, term()} | {:error, term()}
   def deserialize(string) when is_binary(string) do
@@ -228,17 +200,8 @@ defmodule SwarmEx.Utils do
 
   @doc """
   Logs a message with additional context and metadata.
-  Ensures consistent log formatting across the application.
-
-  ## Examples
-
-      iex> log(:info, "Processing message", agent_id: "123")
-      :ok
-
-      iex> log(:error, "Failed to process", [error: "timeout", agent_id: "123"])
-      :ok
   """
-  @spec log(atom(), String.t(), keyword()) :: :ok
+  @spec log(log_level(), String.t(), log_metadata()) :: :ok
   def log(level, message, metadata \\ []) do
     metadata = Keyword.merge([timestamp: DateTime.utc_now()], metadata)
 
@@ -256,23 +219,14 @@ defmodule SwarmEx.Utils do
   end
 
   @doc """
-  Deep merges two maps recursively. If the same key exists in both maps
-  and both values are maps, they are merged recursively. Otherwise, the
-  value from the second map takes precedence.
-
-  ## Examples
-
-      iex> deep_merge(%{a: 1, b: %{c: 2}}, %{b: %{d: 3}, e: 4})
-      %{a: 1, b: %{c: 2, d: 3}, e: 4}
-
-      iex> deep_merge(%{a: %{b: 1}}, %{a: 2})
-      %{a: 2}
+  Deep merges two maps recursively.
   """
   @spec deep_merge(map(), map()) :: map()
   def deep_merge(left, right) when is_map(left) and is_map(right) do
     Map.merge(left, right, &deep_resolve/3)
   end
 
+  @spec deep_resolve(term(), map(), map()) :: map()
   defp deep_resolve(_key, left, right) when is_map(left) and is_map(right) do
     deep_merge(left, right)
   end
