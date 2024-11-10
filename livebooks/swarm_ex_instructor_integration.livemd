@@ -1,12 +1,13 @@
-# Swarm_Ex - Instructor Integration
+# Swarm_Ex - Instructor Integration - fork
 
 ```elixir
 Mix.install(
   [
     {:instructor, "~> 0.0.5"},
     {:openai_ex, "~> 0.8.4"},
-    {:swarm_ex, git: "https://github.com/nrrso/swarm_ex.git", branch: "main"},
-    {:jason, "~> 1.4"}
+    {:swarm_ex, path: "/Users/norris/Projects/swarm_ex"},
+    {:jason, "~> 1.4"},
+    {:kino, "~> 0.14.2"}
   ],
   config: [
     instructor: [
@@ -159,40 +160,48 @@ defmodule TriageAgent do
   use SwarmEx.Agent
 
   @impl true
-  def init(opts) do
-    {:ok, opts}
-  end
-
-  @impl true
-  def terminate(_reason, _state), do: :ok
-
-  @impl true
-  def handle_message(message, state) when is_binary(message) do
+  def handle_message(%Message{role: :user, content: content} = msg, state) do
+    Logger.info(state)
     # Directly execute the ClassifyMessageTool instead of using execute_tool
-    case ClassifyMessageTool.execute(%{message: message}) do
+    case ClassifyMessageTool.execute(%{message: content}) do
       {:ok, %{is_star_wars: true}} ->
         Logger.info("Message classified as Star Wars related. Handing off to StarWarsAgent.")
-        handoff_to_star_wars(message, state)
+        handoff_to_star_wars(msg, state)
       
       {:ok, %{is_star_wars: false}} ->
         Logger.info("Message not Star Wars related. Providing general response.")
-        {:ok, "Hi, how can I help?", state}
+        reply = %Message{
+          role: :assistant,
+          content: "Hi, how can I help?",
+          agent: Map.get(state, :name, self())
+        }
+        {:ok, reply, state}
       
       {:error, reason} ->
         Logger.error("Classification failed: #{inspect(reason)}")
-        {:error, "Sorry, I couldn't process your message."}
+        reply = %Message{
+          role: :assistant,
+          content: "Sorry, I couldn't process your message.",
+          agent: Map.get(state, :name, self())
+        }
+        {:error, reply}
     end
   end
 
   @impl true
-  def handle_tool(:respond, _args, state) do
+  def handle_handoff(target, state) do
     {:ok, state}
   end
 
   defp handoff_to_star_wars(message, state) do
     case state[:star_wars_agent] do
       nil -> 
-        {:error, "Star Wars agent not configured"}
+        reply = %Message{
+          role: :assistant,
+          content: "Star Wars agent not configured",
+          agent: Map.get(state, :name, self())
+        }
+        {:error, reply}
       agent_pid -> 
         case SwarmEx.send_message_to_pid(agent_pid, message) do
           {:ok, response} -> {:ok, response, state}
@@ -209,33 +218,29 @@ defmodule StarWarsAgent do
   use SwarmEx.Agent
 
   @impl true
-  def init(opts) do
-    {:ok, opts}
-  end
-
-  @impl true
-  def terminate(_reason, _state), do: :ok
-
-  @impl true
-  def handle_message(message, state) when is_binary(message) do
-    case StarWarsResponseTool.execute(%{message: message}) do
+  def handle_message(%Message{role: :user, content: content} = _msg, state) do
+    Logger.info(state)
+    case StarWarsResponseTool.execute(%{message: content}) do
       {:ok, %{reply: reply}} -> 
         Logger.info("Generated a response from Yoda.")
-        {:ok, reply, state}
+        response = %Message{
+          role: :assistant,
+          content: reply,
+          agent: Map.get(state, :name, self())
+        }
+        {:ok, response, state}
       {:error, reason} -> 
         Logger.error("Reply failed: #{inspect(reason)}")
-        {:error, "Sorry, I couldn't reply to your message."}
+        response = %Message{
+          role: :assistant,
+          content: "Sorry, I couldn't reply to your message.",
+          agent: Map.get(state, :name, self())
+        }
+        {:error, response}
     end
-  end
-
-  @impl true
-  def handle_tool(:respond, _args, state) do
-    {:ok, state}
   end
 end
 ```
-
-## Instantiate Tools and Agents
 
 ```elixir
 # Create network and agents
@@ -243,14 +248,9 @@ end
 ```
 
 ```elixir
-# Register our tools
-SwarmEx.register_tool(ClassifyMessageTool)
-SwarmEx.register_tool(StarWarsResponseTool)
-```
-
-```elixir
 # Create the Star Wars agent first
-{:ok, star_wars_agent} = SwarmEx.create_agent(network, StarWarsAgent, name: "star_wars_agent")
+sw_opts = [name: "star_wars_agent"]
+{:ok, star_wars_agent} = SwarmEx.create_agent(network, StarWarsAgent, sw_opts)
 ```
 
 ```elixir
@@ -259,29 +259,58 @@ SwarmEx.Client.list_agents(network)
 
 ```elixir
 # Create the triage agent with reference to the Star Wars agent
+tr_opts = [name: "triage_agent", star_wars_agent: star_wars_agent]
 {:ok, triage_agent} = SwarmEx.create_agent(
   network, 
   TriageAgent, 
-  name: "triage_agent",
-  star_wars_agent: star_wars_agent
+  tr_opts
 )
-
 ```
 
 ```elixir
-SwarmEx.Client.list_agents(network)
+Node.get_cookie()
 ```
 
-## Sending Message
+<!-- livebook:{"branch_parent_index":0} -->
 
-```elixir
-# Test with non-Star Wars message
-{:ok, regular_response} = SwarmEx.send_message(network, "triage_agent", "Hello, what's the weather like?")
-IO.puts("Regular response: #{regular_response}")
-```
+## Chat
 
 ```elixir
-# Test with Star Wars message
-{:ok, star_wars_response} = SwarmEx.send_message(network, "triage_agent", "Tell me about the Jedi")
-IO.puts("Star Wars response: #{star_wars_response}")
+frame = Kino.Frame.new()
 ```
+
+```elixir
+inputs = [
+  message: Kino.Input.textarea("Message")
+]
+
+form = Kino.Control.form(inputs, submit: "Send")
+
+# To Trigger the Star Wars agent you can ask:
+# Explain the history and life of the Mandalorians?
+```
+
+```elixir
+Kino.Frame.render(frame, "Welcome to Agent Chat!")
+
+for %{data: data} <- Kino.Control.stream(form) do
+  Kino.Frame.append(frame, "user: #{data.message}")
+  
+  # Create Message struct for the user's message
+  message = %SwarmEx.Message{
+    role: :user,
+    content: data.message,
+    agent: nil
+  }
+  
+  # Send message and handle response
+  case SwarmEx.send_message(network, "triage_agent", message) do
+    {:ok, response} ->
+      Kino.Frame.append(frame, "agent: #{response.content}")
+    {:error, error} ->
+      Kino.Frame.append(frame, "Error: #{inspect(error)}")
+  end
+end
+```
+
+<!-- livebook:{"offset":7191,"stamp":{"token":"XCP.l3MMEazzLFNKeDJ_8rk1WtJGab222Hb7kREbgwNwUdz0Oz7HoyxdwwZNXgYj29PNbHhMPZswrUcNQmnirKLzMwVBu5PIvIRRV9XJCSWcdhiykmki7FpmO-Q","version":2}} -->

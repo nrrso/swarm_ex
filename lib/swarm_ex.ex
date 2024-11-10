@@ -28,9 +28,11 @@ defmodule SwarmEx do
 
         def init(opts), do: {:ok, opts}
 
-        def handle_message(msg, state) do
-          case ClassifyTool.classify(msg) do
-            {:ok, result} -> {:ok, result, state}
+        def handle_message(%Message{role: :user, content: content} = msg, state) do
+          case ClassifyTool.classify(content) do
+            {:ok, result} ->
+              reply = %Message{role: :assistant, content: result, agent: msg.agent}
+              {:ok, reply, state}
             error -> error
           end
         end
@@ -40,15 +42,16 @@ defmodule SwarmEx do
       {:ok, agent_pid} = SwarmEx.create_agent(network, MyAgent)
 
       # Send a message to the agent
-      {:ok, response} = SwarmEx.send_message(agent_pid, "Hello!")
+      message = %Message{role: :user, content: "Hello!", agent: nil}
+      {:ok, response} = SwarmEx.send_message(agent_pid, message)
   """
 
-  alias SwarmEx.{Client, Agent, Error, ClientSupervisor}
+  alias SwarmEx.{Client, Agent, Error, Message, ClientSupervisor}
 
   @type network :: pid()
   @type agent :: pid() | String.t()
-  @type message :: term()
-  @type response :: {:ok, term()} | {:error, term()}
+  @type message :: Message.t()
+  @type response :: {:ok, Message.t()} | {:error, term()}
 
   @doc """
   Creates a new agent network with the given configuration.
@@ -106,10 +109,11 @@ defmodule SwarmEx do
 
   ## Examples
 
-      {:ok, response} = SwarmEx.send_message_to_pid(agent_pid, "Process this")
+      message = %Message{role: :user, content: "Process this", agent: nil}
+      {:ok, response} = SwarmEx.send_message_to_pid(agent_pid, message)
   """
-  @spec send_message_to_pid(pid(), message()) :: response()
-  def send_message_to_pid(agent_pid, message) when is_pid(agent_pid) do
+  @spec send_message_to_pid(pid(), Message.t()) :: response()
+  def send_message_to_pid(agent_pid, %Message{} = message) when is_pid(agent_pid) do
     try do
       GenServer.call(agent_pid, {:message, message})
     catch
@@ -128,10 +132,12 @@ defmodule SwarmEx do
 
   ## Examples
 
-      {:ok, response} = SwarmEx.send_message(network, "agent_id", "Process this")
+      message = %Message{role: :user, content: "Process this", agent: nil}
+      {:ok, response} = SwarmEx.send_message(network, "agent_id", message)
   """
-  @spec send_message(network(), String.t(), message()) :: response()
-  def send_message(network, agent_id, message) when is_pid(network) and is_binary(agent_id) do
+  @spec send_message(network(), String.t(), Message.t()) :: response()
+  def send_message(network, agent_id, %Message{} = message)
+      when is_pid(network) and is_binary(agent_id) do
     case Client.send_message(network, agent_id, message) do
       {:ok, _response} = success ->
         success
@@ -201,6 +207,24 @@ defmodule SwarmEx do
   end
 
   @doc """
+  Syncs the current context with a specific agent.
+
+  ## Examples
+
+      {:ok, context} = SwarmEx.sync_context(network, "agent_id")
+  """
+  @spec sync_context(network(), String.t()) :: {:ok, map()} | {:error, term()}
+  def sync_context(network, agent_id) when is_pid(network) and is_binary(agent_id) do
+    case Client.sync_context(network, agent_id) do
+      {:ok, _context} = success ->
+        success
+
+      {:error, reason} ->
+        {:error, Error.NetworkError.exception(reason: reason)}
+    end
+  end
+
+  @doc """
   Registers a new tool that can be used by agents in the network.
 
   This function is deprecated. Instead of using the Tool API, define your tools as regular modules
@@ -251,5 +275,5 @@ defmodule SwarmEx do
   Returns the version of the SwarmEx library.
   """
   @spec version() :: String.t()
-  def version, do: "0.2.0"
+  def version, do: Application.spec(:swarm_ex)[:vsn]
 end

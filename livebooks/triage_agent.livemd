@@ -1,0 +1,255 @@
+# Swarm_Ex - Triage Agent System
+
+```elixir
+Mix.install(
+  [
+    {:instructor, "~> 0.0.5"},
+    {:openai_ex, "~> 0.8.4"},
+    {:swarm_ex, path: "/Users/norris/Projects/swarm_ex"},
+    {:jason, "~> 1.4"},
+    {:kino, "~> 0.14.2"}
+  ],
+  config: [
+    instructor: [
+      adapter: Instructor.Adapters.OpenAI,
+      openai: [api_key: System.fetch_env!("LB_OPENAI_API_KEY")]
+    ]
+  ]
+)
+```
+
+## Define Example Modules
+
+````elixir
+defmodule RequestClassifier do
+  use Ecto.Schema
+  use Instructor.Validator
+
+  @doc """
+  ## Field Descriptions:
+  - type: The type of request (sales, refund, or unknown)
+  - reason: A short rationalization for the classification
+  - confidence: A confidence score between 0.0 and 1.0
+  """
+  @primary_key false
+  embedded_schema do
+    field(:type, :string)
+    field(:reason, :string)
+    field(:confidence, :float)
+  end
+
+  @impl true
+  def validate_changeset(changeset) do
+    changeset
+    |> Ecto.Changeset.validate_number(:confidence,
+      greater_than_or_equal_to: 0.0,
+      less_than_or_equal_to: 1.0
+    )
+    |> Ecto.Changeset.validate_inclusion(:type, ["sales", "refund", "unknown"])
+  end
+
+  def classify_request(text) do
+    Instructor.chat_completion(
+      model: "gpt-4",
+      response_model: __MODULE__,
+      max_retries: 3,
+      messages: [
+        %{
+          role: "user",
+          content: """
+          Classify if this request is about sales, refunds, or unknown:
+          ```
+          #{text}
+          ```
+          """
+        }
+      ]
+    )
+  end
+end
+````
+
+```elixir
+require Logger
+
+defmodule RefundProcessor do
+  def process_refund(item_id, reason \\ "NOT SPECIFIED") do
+    Logger.info("[mock] Refunding item #{item_id} because #{reason}...")
+    {:ok, "Success!"}
+  end
+
+  def apply_discount do
+    Logger.info("[mock] Applying discount...")
+    {:ok, "Applied discount of 11%"}
+  end
+end
+```
+
+```elixir
+defmodule TriageAgent do
+  use SwarmEx.Agent
+
+  @impl true
+  def init(opts) do
+    {:ok, opts}
+  end
+
+  @impl true
+  def terminate(_reason, _state), do: :ok
+
+  @impl true
+  def handle_message(message, state) when is_binary(message) do
+    case RequestClassifier.classify_request(message) do
+      {:ok, %{type: "sales"}} ->
+        Logger.info("Request classified as sales related. Handing off to SalesAgent.")
+        handoff_to_sales(message, state)
+      
+      {:ok, %{type: "refund"}} ->
+        Logger.info("Request classified as refund related. Handing off to RefundsAgent.")
+        handoff_to_refunds(message, state)
+      
+      {:ok, %{type: "unknown"}} ->
+        Logger.info("Request type unknown. Providing general response.")
+        {:ok, "I'm not sure how to help with that. Would you like to know about our products or discuss a refund?", state}
+      
+      {:error, reason} ->
+        Logger.error("Classification failed: #{inspect(reason)}")
+        {:error, "Sorry, I couldn't process your message."}
+    end
+  end
+
+  defp handoff_to_sales(message, state) do
+    case state[:sales_agent] do
+      nil -> 
+        {:error, "Sales agent not configured"}
+      agent_pid -> 
+        case SwarmEx.send_message_to_pid(agent_pid, message) do
+          {:ok, response} -> {:ok, response, state}
+          error -> error
+        end
+    end
+  end
+
+  defp handoff_to_refunds(message, state) do
+    case state[:refunds_agent] do
+      nil -> 
+        {:error, "Refunds agent not configured"}
+      agent_pid -> 
+        case SwarmEx.send_message_to_pid(agent_pid, message) do
+          {:ok, response} -> {:ok, response, state}
+          error -> error
+        end
+    end
+  end
+end
+```
+
+```elixir
+defmodule SalesAgent do
+  use SwarmEx.Agent
+
+  @impl true
+  def init(opts) do
+    {:ok, opts}
+  end
+
+  @impl true
+  def terminate(_reason, _state), do: :ok
+
+  @impl true
+  def handle_message(message, state) when is_binary(message) do
+    # Enthusiastic response about selling bees
+    response = """
+    🐝 Absolutely buzzing to tell you about our amazing bees! 
+    Our bees are the highest quality, perfect for both hobbyist and professional beekeepers.
+    What specific type of bees are you interested in?
+    """
+    {:ok, response, state}
+  end
+end
+```
+
+```elixir
+defmodule RefundsAgent do
+  use SwarmEx.Agent
+
+  @impl true
+  def init(opts) do
+    {:ok, opts}
+  end
+
+  @impl true
+  def terminate(_reason, _state), do: :ok
+
+  @impl true
+  def handle_message(message, state) when is_binary(message) do
+    cond do
+      String.contains?(String.downcase(message), "expensive") ->
+        {:ok, "I understand the price concern. I can offer you a discount code for 11% off. Would you like that instead of a refund?", state}
+      
+      String.match?(message, ~r/item[_\-][0-9]+/i) ->
+        [item_id] = Regex.run(~r/item[_\-][0-9]+/i, message)
+        {:ok, result} = RefundProcessor.process_refund(item_id)
+        {:ok, "I've processed your refund: #{result}", state}
+      
+      true ->
+        {:ok, "I can help you with your refund. Could you please provide the item ID (format: item_XXX)?", state}
+    end
+  end
+end
+```
+
+```elixir
+# Create network
+{:ok, network} = SwarmEx.create_network()
+```
+
+```elixir
+# Create the specialized agents first
+{:ok, sales_agent} = SwarmEx.create_agent(network, SalesAgent, name: "sales_agent")
+{:ok, refunds_agent} = SwarmEx.create_agent(network, RefundsAgent, name: "refunds_agent")
+```
+
+```elixir
+# Create the triage agent with references to specialized agents
+{:ok, triage_agent} = SwarmEx.create_agent(
+  network, 
+  TriageAgent, 
+  name: "triage_agent",
+  sales_agent: sales_agent,
+  refunds_agent: refunds_agent
+)
+```
+
+```elixir
+SwarmEx.Client.list_agents(network)
+```
+
+```elixir
+frame = Kino.Frame.new()
+```
+
+```elixir
+inputs = [
+  message: Kino.Input.textarea("Message")
+]
+
+form = Kino.Control.form(inputs, submit: "Send")
+
+# Example messages to try:
+# - "Tell me about your bees" (Sales)
+# - "I need a refund for item_123" (Refund)
+# - "This item_456 is too expensive" (Refund with discount offer)
+```
+
+```elixir
+Kino.Frame.render(frame, "Welcome to Agent Chat!")
+
+for %{data: data} <- Kino.Control.stream(form) do
+  Kino.Frame.append(frame, "user: #{data.message}")
+  {:ok, response} = SwarmEx.send_message(network, "triage_agent", data.message)
+  Kino.Frame.append(frame, "agent: #{response}")
+end
+```
+
+<!-- livebook:{"offset":6239,"stamp":{"token":"XCP.jIC_pqY55U5fwVlIBZZVS2PlDNabstyRvt-VqD8Xn7Irbrcjc3bW25-u8YJtEJhHptal-mMUwECcBO-eBIj0OWfWE4OGXASfIAhAa0NfBwXuyJaH6RYCG4V_n6J_WcTZtzOAot9rsfG9JE4oq3Vj","version":2}} -->

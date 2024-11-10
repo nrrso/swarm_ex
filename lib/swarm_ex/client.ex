@@ -12,7 +12,7 @@ defmodule SwarmEx.Client do
 
   use GenServer
   require Logger
-  alias SwarmEx.{Agent, Utils}
+  alias SwarmEx.{Agent, Message, Utils, Error}
 
   @typedoc "Client state structure"
   @type t :: %__MODULE__{
@@ -23,7 +23,10 @@ defmodule SwarmEx.Client do
         }
 
   @typedoc "Network context map containing shared state"
-  @type context :: %{optional(atom() | String.t()) => term()}
+  @type context :: %{
+          optional(atom() | String.t()) => term(),
+          messages: [Message.t()]
+        }
 
   @typedoc "Map of agent IDs to their process IDs"
   @type agents_map :: %{optional(agent_id()) => pid()}
@@ -42,7 +45,7 @@ defmodule SwarmEx.Client do
           registry: atom()
         ]
 
-  defstruct context: %{},
+  defstruct context: %{messages: []},
             active_agents: %{},
             network_id: nil,
             options: []
@@ -54,7 +57,7 @@ defmodule SwarmEx.Client do
 
   ## Options
     * `:network_id` - Custom identifier for the network (optional)
-    * `:context` - Initial context map (default: %{})
+    * `:context` - Initial context map (default: %{messages: []})
     * `:registry` - Custom registry for agent processes (optional)
   """
   @spec start_link(client_opts()) :: GenServer.on_start()
@@ -81,10 +84,11 @@ defmodule SwarmEx.Client do
 
   @doc """
   Sends a message to a specific agent in the network.
+  Expects a Message struct and returns a Message struct response.
   """
-  @spec send_message(GenServer.server(), agent_id(), term()) ::
-          {:ok, term()} | {:error, term()}
-  def send_message(client, agent_id, message) do
+  @spec send_message(GenServer.server(), agent_id(), Message.t()) ::
+          {:ok, Message.t()} | {:error, term()}
+  def send_message(client, agent_id, %Message{} = message) do
     GenServer.call(client, {:send_message, agent_id, message})
   end
 
@@ -112,16 +116,27 @@ defmodule SwarmEx.Client do
     GenServer.call(client, :list_agents)
   end
 
+  @doc """
+  Syncs the current context with a specific agent.
+  """
+  @spec sync_context(GenServer.server(), agent_id()) :: {:ok, context()} | {:error, term()}
+  def sync_context(client, agent_id) do
+    GenServer.call(client, {:sync_agent_context, agent_id})
+  end
+
   # Server Callbacks
 
   @impl true
   @spec init(client_opts()) :: {:ok, t()}
   def init(opts) do
     network_id = opts[:network_id] || Utils.generate_id("network")
+    context = opts[:context] || %{}
+    # Ensure messages list exists in context
+    context = Map.put_new(context, :messages, [])
 
     state = %__MODULE__{
       network_id: network_id,
-      context: opts[:context] || %{},
+      context: context,
       options: opts
     }
 
@@ -132,7 +147,12 @@ defmodule SwarmEx.Client do
   @spec handle_call(term(), GenServer.from(), t()) ::
           {:reply, term(), t()}
   def handle_call({:create_agent, agent_module, opts}, _from, state) do
-    opts = Keyword.merge(opts, network_id: state.network_id, context: state.context)
+    opts =
+      Keyword.merge(opts,
+        network_id: state.network_id,
+        network_pid: self(),
+        context: state.context
+      )
 
     case Agent.create(agent_module, opts) do
       {:ok, pid} ->
@@ -141,18 +161,59 @@ defmodule SwarmEx.Client do
 
         Process.monitor(pid)
 
-        {:reply, {:ok, pid}, %{state | active_agents: new_agents}}
+        # Sync context after creation
+        case sync_agent_context(pid, state.context) do
+          :ok ->
+            {:reply, {:ok, pid}, %{state | active_agents: new_agents}}
+
+          {:error, _} = error ->
+            {:reply, error, state}
+        end
 
       {:error, _} = error ->
         {:reply, error, state}
     end
   end
 
-  def handle_call({:send_message, agent_id, message}, _from, state) do
+  def handle_call({:send_message, agent_id, %Message{} = message}, _from, state) do
     case Map.fetch(state.active_agents, agent_id) do
       {:ok, pid} ->
-        result = GenServer.call(pid, {:message, message})
-        {:reply, result, state}
+        # Sync context before sending message
+        case sync_agent_context(pid, state.context) do
+          :ok ->
+            # Update message with agent ID if not set
+            message = %{message | agent: agent_id}
+
+            # Update context with user message
+            state = update_messages(state, message)
+
+            # Send to agent and expect Message struct response
+            case GenServer.call(pid, {:message, message}) do
+              {:ok, %Message{} = reply} ->
+                # Update context with agent's reply
+                state = update_messages(state, reply)
+                {:reply, {:ok, reply}, state}
+
+              {:error, _} = error ->
+                {:reply, error, state}
+            end
+
+          {:error, _} = error ->
+            {:reply, error, state}
+        end
+
+      :error ->
+        {:reply, {:error, :agent_not_found}, state}
+    end
+  end
+
+  def handle_call({:sync_agent_context, agent_id}, _from, state) do
+    case Map.fetch(state.active_agents, agent_id) do
+      {:ok, pid} ->
+        case sync_agent_context(pid, state.context) do
+          :ok -> {:reply, {:ok, state.context}, state}
+          error -> {:reply, error, state}
+        end
 
       :error ->
         {:reply, {:error, :agent_not_found}, state}
@@ -160,8 +221,23 @@ defmodule SwarmEx.Client do
   end
 
   def handle_call({:update_context, new_context}, _from, state) do
-    updated_context = Map.merge(state.context, new_context)
-    {:reply, {:ok, updated_context}, %{state | context: updated_context}}
+    # Ensure we don't lose the messages list when updating context
+    messages = state.context.messages
+    updated_context = new_context |> Map.merge(state.context) |> Map.put(:messages, messages)
+
+    # Sync new context with all agents
+    results =
+      Enum.map(state.active_agents, fn {_id, pid} ->
+        sync_agent_context(pid, updated_context)
+      end)
+
+    case Enum.find(results, &match?({:error, _}, &1)) do
+      nil ->
+        {:reply, {:ok, updated_context}, %{state | context: updated_context}}
+
+      error ->
+        {:reply, error, state}
+    end
   end
 
   def handle_call(:get_context, _from, state) do
@@ -202,6 +278,28 @@ defmodule SwarmEx.Client do
     case Enum.find(agents, fn {_id, pid} -> pid == target_pid end) do
       {id, _pid} -> {:ok, id}
       nil -> :error
+    end
+  end
+
+  @spec update_messages(t(), Message.t()) :: t()
+  defp update_messages(state, message) do
+    messages = [message | state.context.messages]
+    context = Map.put(state.context, :messages, messages)
+    %{state | context: context}
+  end
+
+  @spec sync_agent_context(pid(), context()) :: :ok | {:error, term()}
+  defp sync_agent_context(pid, context) do
+    try do
+      GenServer.call(pid, {:sync_context, context})
+    catch
+      :exit, reason ->
+        {:error,
+         Error.AgentError.exception(
+           agent: pid,
+           reason: reason,
+           message: "Failed to sync context with agent"
+         )}
     end
   end
 end

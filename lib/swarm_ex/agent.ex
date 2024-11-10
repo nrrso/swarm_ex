@@ -11,19 +11,19 @@ defmodule SwarmEx.Agent do
   """
 
   require Logger
-  alias SwarmEx.{Error, Telemetry, Utils}
+  alias SwarmEx.{Error, Message, Telemetry, Utils}
 
   @typedoc "Basic agent state"
   @type state :: term()
 
   @typedoc "Message that can be processed by an agent"
-  @type message :: term()
+  @type message :: Message.t()
 
   @typedoc "Error response tuple"
   @type error :: {:error, term()}
 
   @typedoc "Response from message handling"
-  @type response :: {:ok, term(), state()} | {:error, term()}
+  @type response :: {:ok, Message.t(), state()} | {:error, term()}
 
   @typedoc "Health status of an agent"
   @type health_status :: :healthy | :degraded | :unhealthy
@@ -54,7 +54,9 @@ defmodule SwarmEx.Agent do
           recovery_max_retries: non_neg_integer(),
           recovery_backoff_ms: non_neg_integer(),
           last_health_check: DateTime.t() | nil,
-          last_recovery_attempt: DateTime.t() | nil
+          last_recovery_attempt: DateTime.t() | nil,
+          context: map(),
+          current_message: map()
         }
 
   # Required callbacks for implementing agents
@@ -92,10 +94,10 @@ defmodule SwarmEx.Agent do
       use GenServer
       require Logger
 
-      alias SwarmEx.{Error, Telemetry, Utils}
+      alias SwarmEx.{Error, Message, Telemetry, Utils}
 
-      # Default implementations that can be overridden
       @impl true
+      # Default implementations that can be overridden
       @spec init(SwarmEx.Agent.agent_opts()) ::
               {:ok, SwarmEx.Agent.agent_state()} | {:error, term()}
       def init(opts) do
@@ -124,7 +126,9 @@ defmodule SwarmEx.Agent do
             recovery_backoff_ms:
               opts[:recovery_backoff_ms] || unquote(@default_recovery_backoff_ms),
             last_health_check: nil,
-            last_recovery_attempt: nil
+            last_recovery_attempt: nil,
+            context: opts[:context] || %{messages: []},
+            current_message: %{}
           }
 
           {:ok, state}
@@ -210,9 +214,7 @@ defmodule SwarmEx.Agent do
       end
 
       # Allow modules to override these defaults
-      defoverridable init: 1,
-                     terminate: 2,
-                     handle_handoff: 2,
+      defoverridable handle_handoff: 2,
                      health_check: 1,
                      handle_recovery: 2
 
@@ -221,8 +223,8 @@ defmodule SwarmEx.Agent do
         GenServer.start_link(__MODULE__, opts, name: via_tuple(opts[:name]))
       end
 
-      @spec send_message(pid() | atom() | String.t(), term()) ::
-              {:ok, term()} | {:error, term()}
+      @spec send_message(pid() | atom() | String.t(), Message.t()) ::
+              {:ok, Message.t()} | {:error, term()}
       def send_message(agent, message) do
         GenServer.call(via_tuple(agent), {:message, message})
       end
@@ -242,7 +244,11 @@ defmodule SwarmEx.Agent do
       @impl true
       @spec handle_call(term(), GenServer.from(), SwarmEx.Agent.agent_state()) ::
               {:reply, term(), SwarmEx.Agent.agent_state()}
-      def handle_call({:message, message}, _from, state) do
+      def handle_call({:message, %Message{} = message}, _from, state) do
+        # Store current message in state
+        state = %{state | current_message: message}
+        Logger.debug("Agent #{state.name} processing message: #{inspect(message)}")
+
         if Map.get(state, :health_status) == :unhealthy do
           error =
             Error.AgentError.exception(
@@ -251,13 +257,15 @@ defmodule SwarmEx.Agent do
               message: "Agent is in unhealthy state"
             )
 
-          {:reply, {:error, error}, state}
+          {:reply, {:error, error}, %{state | current_message: nil}}
         else
           network_id = Map.get(state, :network_id, "default")
 
           Telemetry.span_agent_message(self(), :message, network_id, fn ->
             case handle_message(message, state) do
-              {:ok, response, new_state} ->
+              {:ok, %Message{} = response, new_state} ->
+                # Clear current message after successful processing
+                new_state = %{new_state | current_message: nil}
                 {:reply, {:ok, response}, new_state}
 
               {:error, reason} ->
@@ -269,13 +277,21 @@ defmodule SwarmEx.Agent do
                   )
 
                 Logger.error(Exception.message(error))
+                # Clear current message on error
+                state = %{state | current_message: nil}
                 attempt_recovery(error, state)
             end
           end)
         end
       end
 
-      @impl true
+      def handle_call({:sync_context, context}, _from, state) do
+        Logger.debug("Agent #{state.name} syncing context")
+        # Update the agent's context with the new context
+        new_state = %{state | context: context}
+        {:reply, :ok, new_state}
+      end
+
       def handle_call(:get_state, _from, state) do
         {:reply, {:ok, state}, state}
       end
@@ -340,19 +356,86 @@ defmodule SwarmEx.Agent do
 
       @impl true
       def handle_info({:handoff, target}, state) do
-        case handle_handoff(target, state) do
-          {:ok, new_state} ->
-            {:noreply, new_state}
+        Logger.info("Agent #{state.name} starting handoff to #{inspect(target)}")
+
+        # Get latest context from client before handoff
+        case GenServer.call(state.network_pid, :get_context) do
+          {:ok, latest_context} ->
+            Logger.debug("Agent #{state.name} received latest context for handoff")
+
+            # First sync context with target agent
+            case GenServer.call(target, {:sync_context, latest_context}) do
+              :ok ->
+                Logger.info("Agent #{state.name} successfully synced context with target")
+
+                # Then forward current message if exists
+                case state.current_message do
+                  %Message{} = msg ->
+                    Logger.info("Agent #{state.name} forwarding current message to target")
+
+                    case SwarmEx.send_message_to_pid(target, msg) do
+                      {:ok, response} ->
+                        Logger.info(
+                          "Agent #{state.name} successfully forwarded message to target"
+                        )
+
+                        # Complete handoff
+                        case handle_handoff(target, state) do
+                          {:ok, new_state} ->
+                            # Clear current message after successful handoff
+                            new_state = %{new_state | current_message: nil}
+                            Logger.info("Agent #{state.name} completed handoff successfully")
+                            {:noreply, new_state}
+
+                          {:error, reason} ->
+                            error =
+                              Error.AgentError.exception(
+                                agent: Map.get(state, :name),
+                                reason: reason,
+                                message: "Handoff failed"
+                              )
+
+                            Logger.error(Exception.message(error))
+                            {:noreply, state}
+                        end
+
+                      {:error, reason} ->
+                        Logger.error(
+                          "Agent #{state.name} failed to forward message: #{inspect(reason)}"
+                        )
+
+                        {:noreply, state}
+                    end
+
+                  nil ->
+                    Logger.info("Agent #{state.name} has no current message to forward")
+
+                    # No message to forward, just complete handoff
+                    case handle_handoff(target, state) do
+                      {:ok, new_state} ->
+                        Logger.info("Agent #{state.name} completed handoff successfully")
+                        {:noreply, new_state}
+
+                      {:error, reason} ->
+                        error =
+                          Error.AgentError.exception(
+                            agent: Map.get(state, :name),
+                            reason: reason,
+                            message: "Handoff failed"
+                          )
+
+                        Logger.error(Exception.message(error))
+                        {:noreply, state}
+                    end
+                end
+
+              {:error, reason} ->
+                Logger.error("Agent #{state.name} failed to sync context: #{inspect(reason)}")
+                {:noreply, state}
+            end
 
           {:error, reason} ->
-            error =
-              Error.AgentError.exception(
-                agent: Map.get(state, :name),
-                reason: reason,
-                message: "Handoff failed"
-              )
-
-            Logger.error(Exception.message(error))
+            Logger.error("Agent #{state.name} failed to get context: #{inspect(reason)}")
             {:noreply, state}
         end
       end
@@ -519,7 +602,7 @@ defmodule SwarmEx.Agent do
       end
 
       @spec filter_custom_opts(SwarmEx.Agent.agent_opts()) :: keyword()
-      defp filter_custom_opts(opts) do
+      defp filter_custom_opts(opts) when is_list(opts) do
         reserved_keys = [
           :name,
           :instruction,
@@ -580,7 +663,7 @@ defmodule SwarmEx.Agent do
 
         case DynamicSupervisor.start_child(
                SwarmEx.AgentSupervisor,
-               {module, Enum.into(opts, %{})}
+               {module, opts}
              ) do
           {:ok, _} = success ->
             success

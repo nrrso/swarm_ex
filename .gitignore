@@ -29,3 +29,8 @@ swarm_ex-*.tar
 .env
 
 *.todo
+
+python/
+
+
+livebooks/*.exs
